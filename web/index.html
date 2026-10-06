@@ -84,6 +84,30 @@
 
       <!-- ---------- 虚拟机 ---------- -->
       <section class="view" id="view-vm">
+        <div class="card" id="qemu-card">
+          <div class="card-head">
+            <h2>QEMU 运行环境</h2>
+            <span class="badge" id="qemu-badge">—</span>
+          </div>
+          <div class="card-body">
+            <div id="qemu-progress"></div>
+            <div id="qemu-body"><div class="empty">加载中…</div></div>
+          </div>
+          <div class="card-foot">
+            <button class="btn btn-primary" data-action="qemu-install">一键安装 QEMU</button>
+            <button class="btn" data-action="qemu-verify">重新检测</button>
+            <button class="btn btn-danger" data-action="qemu-cancel">取消</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>虚拟机磁盘</h2>
+            <span class="badge" id="disks-dir">—</span>
+          </div>
+          <div class="card-body" id="disks-body"><div class="empty">加载中…</div></div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h2>系统镜像</h2>
@@ -92,14 +116,14 @@
           <div class="card-body">
             <div id="image-progress"></div>
             <div class="form-grid">
-              <label class="span-2">选择镜像
+              <label class="span-2">选择镜像（其他发行版请用下方「自定义链接」）
                 <select class="input" id="img-catalog"></select>
               </label>
-              <label>ISO 存放目录（留空用默认）
-                <input class="input" id="img-dir" placeholder="留空 = 助手数据目录/images">
+              <label>镜像存放目录（留空用便携目录/images）
+                <input class="input" id="img-dir" placeholder="留空 = 便携目录/images">
               </label>
-              <label>虚拟磁盘路径（留空自动生成）
-                <input class="input" id="img-disk" placeholder="留空 = ISO 目录/&lt;版本&gt;.qcow2">
+              <label>磁盘路径（留空自动生成）
+                <input class="input" id="img-disk" placeholder="留空 = 便携目录/disks/xxx.qcow2">
               </label>
               <label>磁盘大小 (GB)
                 <input class="input" id="img-disksize" type="number" min="8" max="512" value="32">
@@ -108,17 +132,22 @@
                 <select class="input" id="img-mirror"></select>
               </label>
               <label class="check"><input type="checkbox" id="img-verify" checked> 校验 SHA256（推荐）</label>
+              <label class="check"><input type="checkbox" id="img-install-qemu" checked> 先从官网自动安装 QEMU</label>
               <label class="check"><input type="checkbox" id="img-start"> 准备完成后立即启动</label>
             </div>
             <div class="card-foot no-pad">
               <button class="btn btn-primary" data-action="image-prepare">一键准备</button>
-              <button class="btn" data-action="image-download">只下载 ISO</button>
+              <button class="btn" data-action="image-download">只下载镜像</button>
               <button class="btn btn-danger" data-action="image-cancel">取消任务</button>
               <button class="btn btn-ghost" data-action="image-finish">安装已完成</button>
             </div>
             <p class="hint">
-              「一键准备」会把 ISO 下载到本地（支持<span class="em">断点续传</span>与 SHA256 校验）、
-              创建 qcow2 虚拟磁盘，并把安装盘写进配置。之后点「启动」即可进入 Zorin OS 安装程序。
+              「一键准备」会依次：<span class="em">安装 QEMU</span> →
+              <span class="em">下载镜像</span>（支持断点续传与 SHA256 校验）→
+              <span class="em">准备磁盘</span> → 写入配置。
+              <br>
+              ISO 会建空盘并从光盘引导安装；<span class="em">云镜像（.qcow2 / .img）免安装</span>——
+              助手会以它作后端做一层 qcow2 叠加层直接用，原镜像保持只读，想重置删掉叠加层即可。
             </p>
           </div>
         </div>
@@ -133,22 +162,28 @@
 
         <div class="card">
           <div class="card-head">
-            <h2>本地 ISO 与未完成下载</h2>
+            <h2>本地镜像与未完成下载</h2>
             <span class="badge" id="img-local-dir">—</span>
           </div>
           <div class="card-body" id="img-local-body"><div class="empty">加载中…</div></div>
         </div>
 
         <div class="card">
-          <div class="card-head"><h2>自定义镜像链接</h2></div>
+          <div class="card-head"><h2>自定义镜像链接（其他发行版）</h2></div>
           <div class="card-body">
             <div class="row-gap">
-              <input class="input" id="img-custom-url" placeholder="https://example.com/xxx.iso" style="flex:1;min-width:240px" spellcheck="false">
+              <input class="input" id="img-custom-url" placeholder="https://example.com/ubuntu-24.04.iso 或 .img / .qcow2" style="flex:1;min-width:240px" spellcheck="false">
               <button class="btn" data-action="image-custom-probe">探测</button>
               <button class="btn btn-primary" data-action="image-custom-download">下载</button>
             </div>
             <div id="img-custom-result"></div>
-            <p class="hint">自定义链接默认不校验（无法预知正确校验和）。若你有官方 SHA256，可填在下方再下载。</p>
+            <p class="hint">
+              其他发行版请自己找镜像地址（各发行版官网 / 镜像站均可）。
+              填了官方 SHA256 就会校验；不填则默认不校验，请自行确认来源可信。
+              <br>
+              小技巧：很多发行版提供<span class="em">云镜像</span>（Ubuntu cloud image、Debian genericcloud 等，
+              后缀 .img / .qcow2），体积更小、下完直接能跑，不用装系统。
+            </p>
             <input class="input" id="img-custom-sha" placeholder="可选：期望的 SHA256（64 位十六进制）" style="margin-top:8px" spellcheck="false">
           </div>
         </div>
@@ -272,13 +307,46 @@
       <!-- ---------- 设置 ---------- -->
       <section class="view" id="view-settings">
         <div class="card">
+          <div class="card-head">
+            <h2>便携目录</h2>
+            <span class="badge" id="portable-badge">—</span>
+          </div>
+          <div class="card-body" id="portable-body"><div class="empty">加载中…</div></div>
+        </div>
+
+        <div class="card">
           <div class="card-head"><h2>虚拟机配置</h2></div>
           <div class="card-body">
             <div class="form-grid">
               <label class="check span-2"><input type="checkbox" id="cfg-vm-enabled"> 启用虚拟机管理</label>
-              <label class="span-2">QEMU 可执行文件路径（留空自动探测）<input class="input" id="cfg-qemu-path" placeholder="C:\Program Files\qemu\qemu-system-x86_64.exe"></label>
-              <label class="span-2">磁盘镜像路径（qcow2）<input class="input" id="cfg-image-path" placeholder="D:\vms\zorin\zorin.qcow2"></label>
-              <label class="span-2">安装 ISO（首次装系统时填写，装完清空）<input class="input" id="cfg-installer-iso" placeholder="D:\iso\Zorin-OS-17-Core-64-bit.iso"></label>
+              <label>虚拟机名称<input class="input" id="cfg-vm-name" placeholder="Zorin OS"></label>
+              <label>磁盘格式
+                <select class="input" id="cfg-disk-format">
+                  <option value="qcow2">qcow2（推荐，支持快照/叠加层）</option>
+                  <option value="raw">raw</option>
+                  <option value="vmdk">vmdk（VMware）</option>
+                  <option value="vpc">vpc（Virtual PC / Hyper-V）</option>
+                  <option value="vdi">vdi（VirtualBox）</option>
+                </select>
+              </label>
+              <label>磁盘接口
+                <select class="input" id="cfg-disk-interface">
+                  <option value="virtio">virtio（最快）</option>
+                  <option value="ide">ide（兼容性最好）</option>
+                  <option value="sata">sata</option>
+                  <option value="scsi">scsi</option>
+                </select>
+              </label>
+              <label>网卡型号
+                <select class="input" id="cfg-net-model">
+                  <option value="virtio">virtio（最快）</option>
+                  <option value="e1000">e1000（Intel，通用）</option>
+                  <option value="rtl8139">rtl8139（老系统兼容）</option>
+                </select>
+              </label>
+              <label class="span-2">QEMU 可执行文件路径（留空自动探测，含便携目录）<input class="input" id="cfg-qemu-path" placeholder="留空即可"></label>
+              <label class="span-2">系统磁盘路径<input class="input" id="cfg-image-path" placeholder="便携目录/disks/xxx.qcow2"></label>
+              <label class="span-2">安装 ISO（首次装系统时填写，装完清空 / 或点「安装已完成」）<input class="input" id="cfg-installer-iso" placeholder="便携目录/images/xxx.iso"></label>
               <label>内存 (MB)<input class="input" id="cfg-memory" type="number" min="512" step="256"></label>
               <label>CPU 核心<input class="input" id="cfg-cpus" type="number" min="1" max="64"></label>
               <label>加速器
@@ -287,16 +355,37 @@
                   <option value="whpx">whpx（Windows Hyper-V）</option>
                   <option value="kvm">kvm（Linux）</option>
                   <option value="hvf">hvf（macOS）</option>
-                  <option value="tcg">tcg（纯软件，最慢）</option>
+                  <option value="tcg">tcg（纯软件，最慢但最兼容）</option>
                 </select>
               </label>
-              <label>SSH 转发端口<input class="input" id="cfg-ssh-port" type="number" min="1" max="65535"></label>
+              <label>显卡
+                <select class="input" id="cfg-vga">
+                  <option value="std">std（标准 VGA）</option>
+                  <option value="virtio">virtio（性能好，需驱动）</option>
+                  <option value="qxl">qxl（SPICE 常用）</option>
+                  <option value="vmware">vmware</option>
+                  <option value="none">none（无显示）</option>
+                </select>
+              </label>
+              <label>SSH 转发端口（宿主）<input class="input" id="cfg-ssh-port" type="number" min="1" max="65535"></label>
               <label>VNC websocket 端口<input class="input" id="cfg-vnc-ws" type="number" min="0" max="65535"></label>
               <label>VNC 密码（最多 8 位）<input class="input" id="cfg-vnc-password" placeholder="留空则不设密码"></label>
-              <label class="span-2">额外 QEMU 参数（每行一个）<textarea class="input" id="cfg-extra-args" rows="3" placeholder="-device usb-host,vendorid=0x1234,productid=0x5678"></textarea></label>
+              <label class="check"><input type="checkbox" id="cfg-usb-tablet"> USB 平板指针（鼠标更精准）</label>
+              <label class="check"><input type="checkbox" id="cfg-audio"> 启用音频</label>
+              <label class="check span-2"><input type="checkbox" id="cfg-share-enabled"> 与客户机共享宿主目录</label>
+              <label class="span-2">共享目录路径<input class="input" id="cfg-share-dir" placeholder="D:\share"></label>
+              <label>共享标签（9p mount_tag）<input class="input" id="cfg-share-tag" placeholder="hostshare"></label>
+              <label class="check"><input type="checkbox" id="cfg-share-readonly"> 共享目录只读</label>
+              <label class="span-2">额外端口转发（每行一个，格式：宿主端口:客户机端口[:tcp|udp]）
+                <textarea class="input" id="cfg-extra-hostfwd" rows="2" placeholder="8080:80&#10;3306:3306:tcp"></textarea>
+              </label>
+              <label class="span-2">额外 QEMU 参数（每行一个）
+                <textarea class="input" id="cfg-extra-args" rows="3" placeholder="-device usb-host,vendorid=0x1234,productid=0x5678"></textarea>
+              </label>
             </div>
             <div class="card-foot no-pad">
               <button class="btn btn-primary" data-action="config-save">保存配置</button>
+              <span class="hint" style="margin:0">改动对下一次「启动」生效。</span>
             </div>
           </div>
         </div>

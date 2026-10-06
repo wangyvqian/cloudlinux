@@ -36,6 +36,7 @@ export class SecurityManager {
 
   async load() {
     await ensureDir(this.dataDir);
+    this.codeFile = path.join(this.dataDir, 'pairing-code.txt');
     if (await pathExists(this.file)) {
       try {
         const data = JSON.parse(await fsp.readFile(this.file, 'utf8'));
@@ -56,8 +57,53 @@ export class SecurityManager {
       this._newPin = this.generatePin();
       this.pinHash = this.hashSecret(this._newPin);
       await this.save();
+      await this._writePinFile(this._newPin);
+    } else if (!this.isPaired) {
+      // 有配对码哈希、但没有任何已配对设备 —— 请求很可能来自一份「老数据目录」，
+      // 里面只有哈希、明文早就丢了（或者换了新版本后配对码文件没生成过）。
+      // 这种情况下用户压根没法配对，所以直接补发一个新码。
+      // 只在「还没有任何配对设备」时才这么做，已配对过就绝不动它。
+      const known = await this.readPinFile();
+      if (!known) {
+        this._newPin = this.generatePin();
+        this.pinHash = this.hashSecret(this._newPin);
+        await this.save();
+        await this._writePinFile(this._newPin);
+        this.logger?.info('security', '未配对且找不到配对码明文，已自动生成一个新的配对码');
+      }
     }
     return this;
+  }
+
+  /**
+   * 把配对码写到便携目录里的文件。
+   * 打包成 EXE / 用 GUI 启动器时看不到控制台，靠这个文件把配对码告知用户。
+   * 它就在用户自己的磁盘上，网页无法读取；配对成功后会被删掉。
+   */
+  async _writePinFile(pin) {
+    try {
+      await fsp.writeFile(this.codeFile,
+        `CloudLinux 配对码：${pin}\n`
+        + `生成于：${new Date().toLocaleString()}\n\n`
+        + '在网页控制台里输入上面这串字符完成配对。\n'
+        + '配对成功后这个文件会被自动删除。\n', 'utf8');
+    } catch { /* 写不了就算了，不影响主流程 */ }
+  }
+
+  async _clearPinFile() {
+    try { await fsp.rm(this.codeFile, { force: true }); } catch { /* ignore */ }
+  }
+
+  /** 读取当前配对码（仅在尚未配对时有意义）。 */
+  async readPinFile() {
+    try {
+      if (!(await pathExists(this.codeFile))) return null;
+      const text = await fsp.readFile(this.codeFile, 'utf8');
+      const match = /配对码[：:]\s*([A-Z0-9]{4,12})/.exec(text);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
   }
 
   async save() {
@@ -101,6 +147,7 @@ export class SecurityManager {
     this.tokens = [];
     this.failures = [];
     await this.save();
+    await this._writePinFile(pin);
     this._newPin = pin;
     return pin;
   }
@@ -110,6 +157,12 @@ export class SecurityManager {
     this.tokens = [];
     await this.save();
     return count;
+  }
+
+  /** 供控制台查询当前配对码（仅未配对时返回，便于 GUI 显示）。 */
+  async pendingPin() {
+    if (this.isPaired) return null;
+    return this.readPinFile();
   }
 
   isLockedOut() {
@@ -160,6 +213,8 @@ export class SecurityManager {
     };
     this.tokens.push(record);
     await this.save();
+    // 已经配对成功，配对码文件没有存在价值了，删掉减少明文暴露
+    await this._clearPinFile();
     this.logger?.info('security', `新设备已配对：${record.label}`);
     return { token, id: record.id };
   }

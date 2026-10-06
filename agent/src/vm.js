@@ -280,6 +280,10 @@ export class VmManager {
 
     const candidates = [];
     if (cfg.qemuPath) candidates.push(cfg.qemuPath);
+    // 便携目录里自装的 QEMU 优先于系统 PATH
+    if (this.config.layout?.qemu) {
+      candidates.push(path.join(this.config.layout.qemu, QEMU_BINARY));
+    }
     candidates.push(QEMU_BINARY);
     if (process.platform === 'win32') {
       for (const dir of WIN_COMMON_DIRS) {
@@ -329,28 +333,89 @@ export class VmManager {
     return [preferred, 'tcg'];
   }
 
+  /** 把配置里的磁盘接口转成 QEMU 的 -drive 参数片段。 */
+  _driveArgs() {
+    const cfg = this.vmConfig;
+    const iface = cfg.diskInterface || 'virtio';
+    // virtio 性能最好，ide 兼容性最好（老系统/无驱动时用）
+    const bus = {
+      virtio: 'if=virtio',
+      ide: 'if=ide,index=0',
+      sata: 'if=none,id=disk0',
+      scsi: 'if=none,id=disk0',
+    }[iface] || 'if=virtio';
+    const args = ['-drive', `file=${cfg.imagePath},format=${cfg.diskFormat || 'qcow2'},cache=writeback,${bus}`];
+    if (iface === 'sata') args.push('-device', 'ide-hd,drive=disk0,bus=ide.1');
+    if (iface === 'scsi') args.push('-device', 'scsi-hd,drive=disk0');
+    return args;
+  }
+
+  /** 把端口转发配置展开成 QEMU 的 hostfwd 列表。 */
+  _hostfwdList() {
+    const cfg = this.vmConfig;
+    const list = [`tcp:127.0.0.1:${cfg.sshPort}-:22`];
+    for (const entry of cfg.extraHostfwd || []) {
+      const proto = entry.protocol === 'udp' ? 'udp' : 'tcp';
+      list.push(`${proto}:127.0.0.1:${entry.hostPort}-:${entry.guestPort}`);
+    }
+    return list;
+  }
+
   buildArgs(accel) {
     const cfg = this.vmConfig;
     const args = [
-      '-name', `cloudlinux:${path.basename(cfg.imagePath || 'vm')}`,
+      '-name', cfg.name || path.basename(cfg.imagePath || 'vm'),
       '-m', String(cfg.memoryMb),
       '-smp', String(cfg.cpus),
       '-accel', accel,
-      '-drive', `file=${cfg.imagePath},if=virtio,format=qcow2,cache=writeback`,
-      '-netdev', `user,id=net0,hostfwd=tcp:127.0.0.1:${cfg.sshPort}-:22`,
-      '-device', 'virtio-net-pci,netdev=net0',
+      ...this._driveArgs(),
+      '-netdev', `user,id=net0,hostfwd=${this._hostfwdList().join(',')}`,
+      '-device', `${cfg.netModel || 'virtio'}-net-pci,netdev=net0`,
       '-device', 'virtio-balloon-pci',
       '-vga', cfg.vga || 'std',
-      '-usb', '-device', 'usb-tablet',
       '-rtc', 'base=localtime',
       '-monitor', 'none',
       '-qmp', `tcp:127.0.0.1:${cfg.qmpPort},server,nowait`,
     ];
 
+    if (cfg.usbTablet !== false) args.push('-usb', '-device', 'usb-tablet');
+
+    // 音频：默认关闭，避免抢占宿主设备
+    if (cfg.audio) {
+      if (process.platform === 'win32') {
+        args.push('-audiodev', 'dsound,id=snd0');
+      } else if (process.platform === 'darwin') {
+        args.push('-audiodev', 'coreaudio,id=snd0');
+      } else {
+        args.push('-audiodev', 'pa,id=snd0');
+      }
+      args.push('-device', 'ich9-intel-hda', '-device', 'hda-duplex,audiodev=snd0');
+    }
+
     if (cfg.installerIso) {
       args.push('-cdrom', cfg.installerIso, '-boot', 'order=dc');
     } else {
       args.push('-boot', 'order=c');
+    }
+
+    // 与宿主共享目录
+    const share = cfg.share || {};
+    if (share.enabled && share.dir) {
+      const tag = share.tag || 'hostshare';
+      if (process.platform === 'win32') {
+        // Windows 宿主不支持 virtfs(9p)，用 FAT 直通盘代替（只读更稳）
+        args.push('-drive', `file=fat:${share.readOnly ? 'ro' : 'rw'}:${share.dir},format=raw,if=none,id=share0`);
+        args.push('-device', 'usb-storage,drive=share0');
+      } else {
+        const opts = [
+          'local',
+          `path=${share.dir}`,
+          `mount_tag=${tag}`,
+          `security_model=${share.readOnly ? 'none' : 'mapped-xattr'}`,
+        ];
+        if (share.readOnly) opts.push('readonly=on');
+        args.push('-virtfs', opts.join(','));
+      }
     }
 
     const vnc = cfg.vnc || {};
@@ -659,6 +724,14 @@ export class VmManager {
       },
       image: imageInfo,
       imagePath: cfg.imagePath || '',
+      diskFormat: cfg.diskFormat || 'qcow2',
+      diskInterface: cfg.diskInterface || 'virtio',
+      netModel: cfg.netModel || 'virtio',
+      extraHostfwd: cfg.extraHostfwd || [],
+      share: cfg.share || { enabled: false, dir: '', tag: 'hostshare', readOnly: false },
+      usbTablet: cfg.usbTablet !== false,
+      audio: Boolean(cfg.audio),
+      name: cfg.name || '',
       installerIso: cfg.installerIso || '',
       memoryMb: cfg.memoryMb,
       cpus: cfg.cpus,

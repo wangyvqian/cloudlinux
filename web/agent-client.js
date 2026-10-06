@@ -166,6 +166,18 @@
     imageDeletePartial(path) { return this.request('/api/images/partial', { method: 'DELETE', body: { path } }); }
     imageCreateDisk(body) { return this.request('/api/images/create-disk', { method: 'POST', body }); }
     imageFinishInstall() { return this.request('/api/images/finish-install', { method: 'POST' }); }
+    // 把已下载的镜像设为安装盘（ISO）或系统盘（云镜像 → 自动建叠加层）
+    imageUseLocal(path, role) { return this.request('/api/images/use-local', { method: 'POST', body: { path, role } }); }
+    imageOverlay(body) { return this.request('/api/images/overlay', { method: 'POST', body, timeoutMs: 600000 }); }
+    disks() { return this.request('/api/images/disks'); }
+    diskInfo(path) { return this.request('/api/images/disk-info', { method: 'POST', body: { path } }); }
+
+    /* -------------------- QEMU -------------------- */
+
+    qemuStatus() { return this.request('/api/qemu'); }
+    qemuInstall(body = {}) { return this.request('/api/qemu/install', { method: 'POST', body }); }
+    qemuCancel() { return this.request('/api/qemu/cancel', { method: 'POST' }); }
+    qemuVerify() { return this.request('/api/qemu/verify', { method: 'POST' }); }
 
     /* -------------------- 事件流 -------------------- */
 
@@ -205,7 +217,7 @@
 
         const known = [
           'hello', 'log', 'vm', 'sync', 'sync-progress', 'security', 'config', 'notification',
-          'image', 'image-progress',
+          'image', 'image-progress', 'qemu',
         ];
         for (const name of known) {
           source.addEventListener(name, (event) => {

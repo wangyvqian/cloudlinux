@@ -12,12 +12,19 @@
     "dev": "node --watch src/index.js",
     "new-pin": "node src/index.js --new-pin",
     "routes": "node src/index.js --print-routes",
+    "build": "node scripts/build-exe.mjs",
+    "build:launcher": "powershell -ExecutionPolicy Bypass -File ../launcher/build-launcher.ps1",
     "test": "echo \"先启动助手，再运行： npm run test:smoke -- <配对码>\" && exit 0",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:images": "node scripts/test-images.mjs"
+    "test:images": "node scripts/test-images.mjs",
+    "test:qemu": "node scripts/test-qemu.mjs"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6"
+  }
 }

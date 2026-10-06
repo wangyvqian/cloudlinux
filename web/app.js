@@ -24,7 +24,9 @@
     config: null,
     tokens: [],
     logs: [],
-    images: { catalog: [], local: { items: [] }, status: null, dir: '' },
+    images: { catalog: [], local: { items: [] }, disks: { items: [] }, status: null, dir: '', disksDir: '' },
+    qemu: null,
+    portable: null,
     activeView: 'overview',
     logLevel: 'info',
   };
@@ -101,8 +103,16 @@
     probing: '探测镜像源',
     downloading: '下载中',
     verifying: '校验 SHA256',
-    creating: '创建磁盘',
+    creating: '创建/准备磁盘',
     done: '已完成',
+  };
+
+  const QEMU_STATE = {
+    idle: ['就绪', ''],
+    downloading: ['下载中', 'warn'],
+    installing: ['安装中', 'warn'],
+    verifying: ['验证中', 'warn'],
+    error: ['失败', 'err'],
   };
 
   /** 把秒数变成“3 分 12 秒”这类可读文本。 */
@@ -191,8 +201,8 @@
 
     // 日志是增量追加渲染的，进入视图时要整体重绘一次，否则只显示进入之后的日志
     if (name === 'logs') renderLogs();
-    // 镜像的进度是按需更新的，切回来时重绘一次保证与最新状态一致
-    if (name === 'vm') renderImages();
+    // 镜像/QEMU 的进度是按需更新的，切回来时重绘一次保证与最新状态一致
+    if (name === 'vm') { renderImages(); renderQemu(); renderDisks(); }
   }
 
   /* ==================== 渲染：概览 ==================== */
@@ -354,8 +364,10 @@
     if (!res) return;
     state.images.catalog = res.catalog || [];
     state.images.local = res.local || { items: [] };
+    state.images.disks = res.disks || { items: [] };
     state.images.status = res.status || null;
     state.images.dir = res.downloadDir || '';
+    state.images.disksDir = res.disksDir || '';
   }
 
   async function refreshImages() {
@@ -485,20 +497,29 @@
     const items = img.local?.items || [];
     $('img-local-body').innerHTML = items.length ? `
       <table class="table">
-        <thead><tr><th>文件</th><th>大小 / 进度</th><th>状态</th><th></th></tr></thead>
+        <thead><tr><th>文件</th><th>类型</th><th>大小 / 进度</th><th>状态</th><th></th></tr></thead>
         <tbody>${items.map((item) => {
           const pct = item.partialPercent;
+          const typeBadge = item.kind === 'iso'
+            ? '<span class="badge info">安装盘 ISO</span>'
+            : item.kind === 'disk'
+              ? '<span class="badge ok">云镜像（免安装）</span>'
+              : '<span class="badge">未知</span>';
+          const complete = item.exists;
           return `<tr>
             <td><strong>${esc(item.name)}</strong></td>
-            <td class="mono">${item.exists
+            <td>${typeBadge}${item.format ? ` <span class="mono">${esc(item.format)}</span>` : ''}</td>
+            <td class="mono">${complete
               ? esc(item.sizeText || '—')
               : `${esc(item.partialText || '—')}${item.expectedText ? ` / ${esc(item.expectedText)}` : ''}`}</td>
-            <td>${item.exists
+            <td>${complete
               ? '<span class="badge ok">完整</span>'
               : `<span class="badge warn">未完成${pct != null ? ` ${pct.toFixed(0)}%` : ''}</span>`}</td>
             <td><div class="actions">
-              ${item.exists && !item.incomplete
-                ? `<button class="btn btn-sm btn-primary" data-action="image-use-iso" data-path="${esc(item.path)}">用作安装盘</button>`
+              ${complete
+                ? `<button class="btn btn-sm btn-primary" data-action="image-use-local" data-role="${item.kind === 'iso' ? 'installer' : 'disk'}" data-path="${esc(item.path)}">
+                     ${item.kind === 'iso' ? '用作安装盘' : '免安装使用'}
+                   </button>`
                 : ''}
               ${item.incomplete
                 ? `<button class="btn btn-sm" data-action="image-resume" data-catalog="${esc(item.catalogId || '')}">续传</button>
@@ -507,12 +528,127 @@
             </div></td>
           </tr>`;
         }).join('')}</tbody>
-      </table>` : emptyBox('这个目录里还没有 ISO。点上面的「一键准备」或「只下载 ISO」开始。');
+      </table>` : emptyBox('这个目录里还没有镜像。点上面的「一键准备」或「只下载镜像」开始。');
   }
 
   function renderImages() {
     renderImageProgress();
     renderImageCatalog();
+  }
+
+  /* ==================== 渲染：QEMU ==================== */
+
+  function renderQemu() {
+    const info = state.qemu;
+    const badge = $('qemu-badge');
+    const body = $('qemu-body');
+    const progress = $('qemu-progress');
+    if (!badge || !body) return;
+    if (!info) { badge.className = 'badge'; badge.textContent = '—'; return; }
+
+    const [label, cls] = QEMU_STATE[info.state] || [info.state, ''];
+    const working = ['downloading', 'installing', 'verifying'].includes(info.state);
+    badge.className = `badge ${working ? 'warn' : (info.managed ? 'ok' : (info.state === 'error' ? 'err' : 'err'))}`;
+    badge.textContent = info.managed ? `已就绪 · ${label}` : (state.qemu.state === 'error' ? '安装失败' : '未安装');
+
+    // 进度条
+    if (working) {
+      const p = info.progress || {};
+      const pct = p.phase === 'installing' || p.phase === 'verifying'
+        ? 100
+        : (p.percent != null ? p.percent : 0);
+      const detail = p.phase === 'installing' ? '正在静默安装（可能弹出 UAC，请点「是」）'
+        : p.phase === 'verifying' ? '正在验证'
+        : [p.bytes != null ? `${bytes(p.bytes)}${p.total ? ` / ${bytes(p.total)}` : ''}` : '', p.speedText || '', p.etaSec ? `剩余 ${etaText(p.etaSec)}` : ''].filter(Boolean).join(' · ');
+      progress.innerHTML = `
+        <div class="task-panel">
+          <div class="task-head">
+            <span class="task-title"><span class="spinner"></span>${esc(label)} QEMU</span>
+            <span class="task-meta">${esc(detail)}</span>
+          </div>
+          <div class="progress progress-lg"><div class="progress-bar ${p.phase === 'downloading' ? 'pulse' : ''}" style="width:${Math.max(2, Math.min(100, pct || 0)).toFixed(1)}%"></div></div>
+        </div>`;
+    } else {
+      progress.innerHTML = '';
+    }
+
+    const rows = [
+      ['平台', `${esc(info.platform)}${info.supported ? '（支持自动安装）' : '（需手动安装）'}`],
+      ['qemu-system', info.qemuPath ? esc(info.qemuPath) : '<span style="color:var(--muted)">未配置</span>'],
+      ['qemu-img', info.qemuImgPath ? esc(info.qemuImgPath) : '<span style="color:var(--muted)">未配置</span>'],
+      ['便携目录', esc(info.installDir)],
+      ['安装版本', info.version ? `${esc(info.version)}${info.buildDate ? ` · 构建于 ${esc(info.buildDate)}` : ''}` : '—'],
+      ['安装时间', info.installedAt ? esc(timeText(info.installedAt)) : '—'],
+    ];
+    body.innerHTML = kvRows(rows)
+      + (info.error ? `<div style="margin-top:10px">${errorBox('上次失败：' + info.error)}</div>` : '')
+      + `<p class="hint">${(info.hints || []).map(esc).join('<br>')}</p>`;
+  }
+
+  /* ==================== 渲染：磁盘 ==================== */
+
+  function renderDisks() {
+    const data = state.images.disks || { items: [] };
+    const dirBadge = $('disks-dir');
+    if (dirBadge) dirBadge.textContent = state.images.disksDir || data.dir || '—';
+    const body = $('disks-body');
+    if (!body) return;
+
+    const items = data.items || [];
+    if (!items.length) {
+      body.innerHTML = emptyBox('便携目录里还没有虚拟机磁盘。用上面的「一键准备」会自动建一个；也可以直接点下面的「新建磁盘」。');
+      return;
+    }
+    body.innerHTML = `
+      <table class="table">
+        <thead><tr><th>磁盘</th><th>格式</th><th>逻辑大小</th><th>实际占用</th><th>来源镜像</th><th></th></tr></thead>
+        <tbody>${items.map((disk) => `
+          <tr>
+            <td><strong>${esc(disk.name)}</strong>${disk.inUse ? ' <span class="badge ok">使用中</span>' : ''}</td>
+            <td class="mono">${esc(disk.format || '—')}</td>
+            <td class="mono">${esc(disk.virtualSizeText || '—')}</td>
+            <td class="mono">${esc(disk.sizeText || '—')}</td>
+            <td class="mono">${disk.backingFile ? esc(disk.backingFile) : '<span style="color:var(--muted)">（独立磁盘）</span>'}</td>
+            <td><div class="actions">
+              ${disk.inUse ? '' : `<button class="btn btn-sm btn-primary" data-action="disk-use" data-path="${esc(disk.path)}">用作系统盘</button>`}
+              <button class="btn btn-sm" data-action="disk-info" data-path="${esc(disk.path)}">详情</button>
+            </div></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  /* ==================== 渲染：便携目录 ==================== */
+
+  function renderPortable() {
+    const p = state.portable;
+    const badge = $('portable-badge');
+    const body = $('portable-body');
+    if (!badge || !body) return;
+    if (!p) { badge.className = 'badge'; badge.textContent = '—'; body.innerHTML = emptyBox('加载中…'); return; }
+
+    badge.className = `badge ${p.packaged ? 'ok' : 'info'}`;
+    badge.textContent = p.packaged ? 'EXE 便携模式' : '源码模式';
+
+    const layout = p.layout || {};
+    const dirs = [
+      ['数据根目录', layout.home],
+      ['配置文件', layout.config],
+      ['日志', layout.logs],
+      ['系统镜像', layout.images],
+      ['虚拟机磁盘', layout.disks],
+      ['同步备份', layout.backups],
+      ['自带运行时', layout.runtime],
+      ['便携 QEMU', layout.qemu],
+    ].filter(([, v]) => v);
+
+    body.innerHTML = kvRows(dirs.map(([k, v]) => [k, `<code>${esc(v)}</code>`]))
+      + `<p class="hint">
+        所有数据都在上面这一个目录里：配置、配对密钥、下载的镜像、虚拟机磁盘、同步备份、自装的 QEMU、日志。
+        把整个目录拷到 U 盘或另一台电脑，<span class="em">换个位置也能接着用</span>。
+        <br>
+        想换地方：启动时加 <code>--home D:\\我的数据</code>，或设环境变量 <code>CLOUDLINUX_HOME</code>。
+      </p>`;
   }
 
   /* ==================== 渲染：同步 ==================== */
@@ -650,19 +786,35 @@
     if (cfg) {
       const vm = cfg.vm || {};
       $('cfg-vm-enabled').checked = Boolean(vm.enabled);
+      $('cfg-vm-name').value = vm.name || '';
       $('cfg-qemu-path').value = vm.qemuPath || '';
       $('cfg-image-path').value = vm.imagePath || '';
       $('cfg-installer-iso').value = vm.installerIso || '';
       $('cfg-memory').value = vm.memoryMb ?? 4096;
       $('cfg-cpus').value = vm.cpus ?? 2;
       $('cfg-accel').value = vm.accel || 'auto';
+      $('cfg-vga').value = vm.vga || 'std';
+      $('cfg-disk-format').value = vm.diskFormat || 'qcow2';
+      $('cfg-disk-interface').value = vm.diskInterface || 'virtio';
+      $('cfg-net-model').value = vm.netModel || 'virtio';
       $('cfg-ssh-port').value = vm.sshPort ?? 2222;
       $('cfg-vnc-ws').value = vm.vnc?.websocketPort ?? 5700;
       $('cfg-vnc-password').value = '';
       $('cfg-vnc-password').placeholder = vm.vnc?.passwordSet ? '已设置（留空则不修改）' : '留空则不设密码';
+      $('cfg-usb-tablet').checked = vm.usbTablet !== false;
+      $('cfg-audio').checked = Boolean(vm.audio);
+      const share = vm.share || {};
+      $('cfg-share-enabled').checked = Boolean(share.enabled);
+      $('cfg-share-dir').value = share.dir || '';
+      $('cfg-share-tag').value = share.tag || 'hostshare';
+      $('cfg-share-readonly').checked = share.readOnly !== false;
+      $('cfg-extra-hostfwd').value = (vm.extraHostfwd || [])
+        .map((e) => `${e.hostPort}:${e.guestPort}${e.protocol && e.protocol !== 'tcp' ? `:${e.protocol}` : ''}`)
+        .join('\n');
       $('cfg-extra-args').value = (vm.extraArgs || []).join('\n');
       $('log-level').value = cfg.agent?.logLevel || 'info';
     }
+    renderPortable();
 
     if (state.tokens.length) {
       $('tokens-body').innerHTML = `
@@ -708,9 +860,10 @@
       client.devices(),
       client.logs(200),
       client.imagesCatalog(),
+      client.qemuStatus(),
     ]);
 
-    const [overview, vm, jobs, config, tokens, devices, logsHistory, imagesPayload] = results;
+    const [overview, vm, jobs, config, tokens, devices, logsHistory, imagesPayload, qemuPayload] = results;
 
     if (overview.status === 'fulfilled') state.agent = overview.value;
     if (vm.status === 'fulfilled') {
@@ -740,6 +893,8 @@
       state.logs = merged.slice(-LOG_LIMIT);
     }
     if (imagesPayload.status === 'fulfilled') applyImagesPayload(imagesPayload.value);
+    if (qemuPayload.status === 'fulfilled') state.qemu = qemuPayload.value;
+    if (overview.status === 'fulfilled') state.portable = overview.value?.portable || null;
 
     // 令牌失效
     for (const result of results) {
@@ -766,9 +921,12 @@
   function renderAll() {
     renderOverview();
     renderVm();
+    renderQemu();
+    renderDisks();
     renderImages();
     renderJobs();
     renderDevices();
+    renderPortable();
     renderSettings();
     if (state.activeView === 'logs') renderLogs();
   }
@@ -826,6 +984,18 @@
           if (state.activeView === 'sync') renderJobs();
         },
         sync: () => { client.listJobs().then((r) => { state.jobs = r?.jobs || []; renderJobs(); renderOverview(); }).catch(() => {}); },
+        qemu: (data) => {
+          if (!data) return;
+          state.qemu = data;
+          renderQemu();
+          if (data.failed) toast(`QEMU 安装失败：${data.failed}`, 'error', 12000);
+          else if (data.cancelled) toast('QEMU 安装已取消', 'warn');
+          else if (data.installed) {
+            toast(`QEMU 已装好：${data.installed.version}`, 'success', 8000);
+            refreshImages().catch(() => {});
+            renderVm();
+          }
+        },
         security: (data) => {
           if (data?.type === 'unpaired-all') { toast('助手已解绑所有设备', 'warn'); handleUnauthorized(); }
           if (data?.type === 'revoked') client.listTokens().then((r) => { state.tokens = r?.tokens || []; renderSettings(); }).catch(() => {});
@@ -912,11 +1082,11 @@
   /** 未配对时把所有面板换成提示，而不是留着上一次的数据。 */
   function renderLocked() {
     $('stat-cards').innerHTML = emptyBox(LOCKED_HINT);
-    for (const id of ['ov-vm-body', 'ov-sync-body', 'ov-agent-body', 'vm-status-body', 'snapshot-body', 'qemu-body', 'jobs-body', 'serial-body', 'usb-body', 'tokens-body', 'security-body', 'img-catalog-body', 'img-local-body', 'image-progress', 'img-custom-result']) {
+    for (const id of ['ov-vm-body', 'ov-sync-body', 'ov-agent-body', 'vm-status-body', 'snapshot-body', 'qemu-body', 'qemu-progress', 'disks-body', 'jobs-body', 'serial-body', 'usb-body', 'tokens-body', 'security-body', 'img-catalog-body', 'img-local-body', 'image-progress', 'img-custom-result', 'portable-body']) {
       const node = $(id);
       if (node) node.innerHTML = emptyBox(LOCKED_HINT);
     }
-    for (const id of ['ov-vm-badge', 'ov-sync-badge', 'vm-badge', 'vnc-badge', 'image-badge']) {
+    for (const id of ['ov-vm-badge', 'ov-sync-badge', 'vm-badge', 'vnc-badge', 'image-badge', 'qemu-badge', 'portable-badge', 'disks-dir']) {
       const node = $(id);
       if (node) { node.className = 'badge'; node.textContent = '—'; }
     }
@@ -1004,6 +1174,7 @@
         diskSizeGb: Number($('img-disksize').value) || 32,
         verify: $('img-verify').checked,
         mirrorIndex: Number($('img-mirror').value) || 0,
+        installQemu: $('img-install-qemu').checked,
         startVm: $('img-start').checked,
       });
       toast(res?.message || '已开始一键准备', 'success', 7000);
@@ -1041,11 +1212,51 @@
     }),
 
     'image-use-iso': (button) => withBusy(button, async () => {
-      const isoPath = button.dataset.path;
-      if (!isoPath) { toast('找不到 ISO 路径', 'warn'); return; }
-      await client.saveConfig({ vm: { enabled: true, installerIso: isoPath } });
-      toast('已设为安装盘，点「启动」就会从它引导', 'success', 7000);
+      const res = await client.imageUseLocal(button.dataset.path, 'installer');
+      toast(res?.message || '已设为安装盘', 'success', 7000);
       await loadAll();
+    }),
+
+    'image-use-local': (button) => withBusy(button, async () => {
+      const res = await client.imageUseLocal(button.dataset.path, button.dataset.role);
+      toast(res?.message || '已完成', 'success', 9000);
+      await loadAll();
+    }),
+
+    'disk-use': (button) => withBusy(button, async () => {
+      const diskPath = button.dataset.path;
+      await client.saveConfig({ vm: { enabled: true, imagePath: diskPath, installerIso: '' } });
+      toast('已设为系统盘，点「启动」即可使用', 'success', 7000);
+      await loadAll();
+    }),
+
+    'disk-info': (button) => withBusy(button, async () => {
+      const info = await client.diskInfo(button.dataset.path);
+      toast(`逻辑 ${info.virtualSizeText} · 实际占用 ${info.onDiskText} · 格式 ${info.format}`
+        + (info.backingFile ? ` · 基于 ${info.backingFile}` : ''), 'info', 10000);
+    }),
+
+    'qemu-install': (button) => withBusy(button, async () => {
+      const res = await client.qemuInstall({ force: false });
+      toast(res?.message || '已开始安装 QEMU', 'success', 8000);
+      const info = await client.qemuStatus();
+      state.qemu = info;
+      renderQemu();
+    }),
+
+    'qemu-verify': (button) => withBusy(button, async () => {
+      const res = await client.qemuVerify();
+      toast(res?.ok ? `找到 QEMU：${res.version}` : (res?.error || '未找到 QEMU'), res?.ok ? 'success' : 'warn', 8000);
+      state.qemu = await client.qemuStatus();
+      renderQemu();
+      state.vm = await client.vmStatus();
+      renderVm();
+    }),
+
+    'qemu-cancel': (button) => withBusy(button, async () => {
+      const res = await client.qemuCancel();
+      toast(res?.cancelled ? '已请求取消 QEMU 任务' : '当前没有进行中的 QEMU 任务',
+        res?.cancelled ? 'info' : 'warn');
     }),
 
     'image-resume': (button) => withBusy(button, async () => {
@@ -1251,17 +1462,44 @@
 
     'config-save': (button) => withBusy(button, async () => {
       const extraArgs = $('cfg-extra-args').value.split('\n').map((s) => s.trim()).filter(Boolean);
+      // “宿主端口:客户机端口[:协议]” → 结构化数据
+      const extraHostfwd = $('cfg-extra-hostfwd').value.split('\n')
+        .map((s) => s.trim()).filter(Boolean)
+        .map((line) => {
+          const [h, g, p] = line.split(':').map((s) => s.trim());
+          return {
+            hostPort: Number(h),
+            guestPort: Number(g),
+            protocol: String(p || 'tcp').toLowerCase() === 'udp' ? 'udp' : 'tcp',
+          };
+        })
+        .filter((e) => Number.isFinite(e.hostPort) && Number.isFinite(e.guestPort));
+
       const patch = {
         vm: {
           enabled: $('cfg-vm-enabled').checked,
+          name: $('cfg-vm-name').value.trim(),
           qemuPath: $('cfg-qemu-path').value.trim(),
           imagePath: $('cfg-image-path').value.trim(),
           installerIso: $('cfg-installer-iso').value.trim(),
           memoryMb: Number($('cfg-memory').value),
           cpus: Number($('cfg-cpus').value),
           accel: $('cfg-accel').value,
+          vga: $('cfg-vga').value,
+          diskFormat: $('cfg-disk-format').value,
+          diskInterface: $('cfg-disk-interface').value,
+          netModel: $('cfg-net-model').value,
           sshPort: Number($('cfg-ssh-port').value),
+          usbTablet: $('cfg-usb-tablet').checked,
+          audio: $('cfg-audio').checked,
+          extraHostfwd,
           extraArgs,
+          share: {
+            enabled: $('cfg-share-enabled').checked,
+            dir: $('cfg-share-dir').value.trim(),
+            tag: $('cfg-share-tag').value.trim() || 'hostshare',
+            readOnly: $('cfg-share-readonly').checked,
+          },
           vnc: { websocketPort: Number($('cfg-vnc-ws').value) },
         },
       };
@@ -1270,7 +1508,7 @@
 
       state.config = await client.saveConfig(patch);
       $('cfg-vnc-password').value = '';
-      toast('配置已保存', 'success');
+      toast('配置已保存，下次「启动」生效', 'success');
       await loadAll();
     }),
 

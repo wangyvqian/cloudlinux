@@ -1,6 +1,22 @@
+# 依赖（仅构建期用：esbuild / postject）
 node_modules/
+
+# 运行时数据（便携目录）—— 里面是配置、密钥、镜像、虚拟机磁盘
 agent/data/
+dist/data/
+data/
+
+# 构建产物
+dist/
+agent/build/
+
+# 日志与临时文件
 *.log
+logs/
 *.tmp
+*.part
+
+# 系统垃圾
 .DS_Store
 Thumbs.db
+desktop.ini

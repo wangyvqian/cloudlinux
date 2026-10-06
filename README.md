@@ -24,55 +24,78 @@
 
 ```
 cloudlinux/
-├── agent/                 桌面助手程序（Node.js，零第三方依赖）
+├── agent/                 桌面助手（Node.js，运行时零第三方依赖）
 │   ├── src/
 │   │   ├── index.js       入口 / CLI / 优雅退出
-│   │   ├── config.js      配置读写（data/config.json）
+│   │   ├── paths.js       便携目录解析（EXE 同级 / data）
+│   │   ├── config.js      配置读写（<便携目录>/config.json）
 │   │   ├── util.js        工具函数
-│   │   ├── logger.js      日志 + 环形缓冲（推给前端）
+│   │   ├── logger.js      日志 + 环形缓冲 + 文件日志（推给前端）
 │   │   ├── security.js    配对 PIN / Token / Origin 白名单
 │   │   ├── events.js      SSE 事件中心
+│   │   ├── download.js    通用下载器（断点续传 / 校验 / 停滞看门狗）
+│   │   ├── proxy.js       代理支持（HTTP 改写 + HTTPS CONNECT 隧道）
+│   │   ├── qemu.js        QEMU 自动下载与静默安装
 │   │   ├── vm.js          QEMU 生命周期 + QMP 客户端 + 快照
-│   │   ├── images.js      系统镜像下载（多镜像源/断点续传/SHA256）+ 建盘 + 一键准备
+│   │   ├── images.js      镜像下载 / 建盘 / 叠加层 / 一键准备
 │   │   ├── sync.js        目录同步 / 备份引擎
 │   │   ├── devices.js     USB / 串口 / 剪贴板枚举
 │   │   ├── api.js         业务路由
 │   │   └── server.js      HTTP / CORS / 路由 / 鉴权
 │   ├── scripts/
-│   │   ├── smoke-test.mjs    安全策略与核心接口的冒烟测试（30 项）
-│   │   └── test-images.mjs   镜像链路测试（下载/取消/续传/SHA256，36 项）
-│   └── data/              运行时数据（配置、密钥、备份、ISO）—— 已 gitignore
-└── web/                   静态前端（直接丢到 GitHub Pages）
-    ├── index.html
-    ├── styles.css
-    ├── agent-client.js    与本地助手通信的封装（含配对流）
-    └── app.js             控制台逻辑
+│   │   ├── build-exe.mjs     打包单文件 EXE（esbuild + Node SEA + postject）
+│   │   ├── smoke-test.mjs    安全策略与核心接口（30 项）
+│   │   ├── test-images.mjs   镜像链路（36 项）
+│   │   ├── test-qemu.mjs     QEMU 安装链路
+│   │   └── trigger.mjs       直接触发后台任务（调试用）
+│   └── data/              便携目录（运行时生成，已 gitignore）
+├── launcher/              桌面启动器（C# WinForms）
+│   ├── CloudLinuxLauncher.cs   源码：托盘 + 控制面板
+│   └── build-launcher.ps1      编译脚本（用系统自带的 csc.exe）
+├── web/                   静态前端（直接丢到 GitHub Pages）
+│   ├── index.html
+│   ├── styles.css
+│   ├── agent-client.js    与本地助手通信的封装（含配对流）
+│   └── app.js             控制台逻辑
+└── dist/                  构建产物（已 gitignore）
 ```
 
 ---
 
 ## 快速开始
 
-### 1. 启动桌面助手
+### 方式一：用打包好的 EXE（推荐，目标机器无需装 Node）
 
-需要 **Node.js ≥ 18**（无需 `npm install`，零依赖）。
+```bash
+# 在开发机上构建一次
+node agent/scripts/build-exe.mjs                                       # → dist/cloudlinux-agent.exe
+powershell -ExecutionPolicy Bypass -File launcher/build-launcher.ps1   # → dist/cloudlinux-launcher.exe
+```
+
+然后把 `dist/` 整个目录拷到任意位置（U 盘也行），双击 **`cloudlinux-launcher.exe`**：
+
+- 自动拉起助手，面板上直接显示 **配对码**
+- 托盘常驻；关窗口只是收进托盘，右键托盘图标才是真退出
+- 「打开控制台」一键跳转网页界面
+- 停止/退出时会**优雅关闭虚拟机**（不是硬杀进程；靠 `--parent-pid` + 停机请求文件）
+
+数据全部在 **EXE 同级的 `data/`** 里，所以整个目录拷走就能接着用。
+
+> 构建不需要额外装 SDK：启动器用系统自带的 `csc.exe`（.NET Framework）编译，
+> 助手用 Node 的 SEA 打包（内含 Node 运行时，约 89 MB）。
+
+### 方式二：从源码运行
+
+需要 **Node.js ≥ 18**（无需 `npm install`，运行时零依赖）。
 
 ```bash
 cd cloudlinux/agent
 node src/index.js
 ```
 
-首次运行会在控制台打印一个 **6 位配对码**，例如：
-
-```
-============================================================
-  首次启动，请记下配对码（在网页控制台里输入）：
-       配对码：  K7M2QX
-  配对码只显示这一次；如需重置： node src/index.js --new-pin
-============================================================
-```
-
-助手默认监听 `http://127.0.0.1:8765`，**只绑定本机回环地址，不对局域网暴露**。
+首次运行会在控制台打印一个 **6 位配对码**，同时写进
+`agent/data/pairing-code.txt`（配对成功后自动删除）。助手默认监听
+`http://127.0.0.1:8765`，**只绑定本机回环地址，不对局域网暴露**。
 
 常用参数：
 
@@ -80,12 +103,20 @@ node src/index.js
 | --- | --- |
 | `--port 8765` | 修改监听端口 |
 | `--host 127.0.0.1` | 修改监听地址（不建议改成 0.0.0.0） |
-| `--data <dir>` | 自定义数据目录 |
+| `--home <dir>` | 指定便携目录（默认 EXE 同级 `data`；源码模式为 `agent/data`） |
+| `--parent-pid <n>` | 监视该进程，它退出时助手跟着优雅停机（启动器用） |
 | `--new-pin` | 生成新的配对码并打印（会清空已配对设备） |
 | `--reset-pairing` | 撤销所有已配对设备 |
+| `--print-routes` | 打印 API 路由表 |
+| `--log-level <lvl>` | `debug` / `info` / `warn` / `error` |
 | `--help` | 帮助 |
 
-### 2. 打开浏览器控制台
+> **看不到配对码？** 它在 `<便携目录>/pairing-code.txt` 里，也写进了
+> `<便携目录>/logs/agent.log`。启动器面板上会直接显示。
+> 如果端口被别的助手占用了，助手会打印一行可读的提示并以退出码 3 结束
+> （不会甩一段堆栈）。
+
+### 方式三：网页控制台
 
 **本地调试**（推荐，因为 `file://` 打开时 `type=module` 会被 CORS 拦）：
 
@@ -159,6 +190,39 @@ qemu-img create -f qcow2 zorin.qcow2 32G
 失败会自动回退到 `tcg` 软件模拟。
 
 ---
+
+## 网络与代理（加速器）
+
+**Node 不会自动使用系统代理**。所以开着 Clash / v2ray 这类加速器时，助手的下载
+仍然走直连——实测 QEMU 安装包直连只有 ~30 KB/s（197 MB 要下近 2 小时），
+走代理后能到 100+ KB/s。
+
+所以助手会**自动探测代理**，顺序是：
+
+1. 配置里的 `network.proxy`（`auto` = 自动，`off` = 强制直连，或直接填地址）
+2. 环境变量 `HTTPS_PROXY` / `HTTP_PROXY`
+3. **Windows 系统代理设置**（注册表 `Internet Settings`）
+4. 探测常见端口（7897 / 7890 / 10809 / 1080 / 7891）
+
+解析结果会写进日志，控制台「设置」里也能看到。`127.0.0.1`、`localhost` 这类
+本机地址自动绕过代理。
+
+- **HTTP**：改写为向代理发绝对 URL
+- **HTTPS**：自己实现 `CONNECT` 隧道后再做 TLS（Node 原生不支持 HTTPS 走代理）
+
+改代理不用重启，控制台里切换即可：
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/network/proxy \
+  -H "Authorization: Bearer <令牌>" -H "Content-Type: application/json" \
+  -d '{"proxy":"http://127.0.0.1:7897"}'
+```
+
+其他网络相关的实现细节：
+
+- **断点续传**：分片写 `<文件名>.part`，取消/断网后自动带 `Range` 续传
+- **停滞看门狗**：连接假死（不报错也不来数据）时 3 分钟判超时并重试；
+  用独立定时器而不是 socket 超时，避免把「慢但正常」的下载误杀
 
 ## 安全模型（重要）
 

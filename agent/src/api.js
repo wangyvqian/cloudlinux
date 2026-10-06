@@ -1,13 +1,17 @@
 /**
  * 业务路由表。
  */
-import { AGENT_VERSION } from './config.js';
-import { probeRemote } from './images.js';
+import { AGENT_VERSION, IS_WINDOWS } from './config.js';
+import { probeRemote } from './download.js';
+import { resolveProxy, testProxy } from './proxy.js';
 import { HANDLED, Router } from './server.js';
 import { HttpError, humanBytes } from './util.js';
 
 export function createRouter(ctx) {
-  const { config, security, logger, events, vm, sync, devices, images } = ctx;
+  const {
+    config, security, logger, events, vm, sync, devices, images, qemu,
+    layout, packaged, downloader,
+  } = ctx;
   const router = new Router();
 
   const requireString = (value, field, { min = 1, max = 500 } = {}) => {
@@ -50,8 +54,17 @@ export function createRouter(ctx) {
       dataDir: config.dataDir,
       startedAt: ctx.startedAt,
       eventsClients: events.size,
+      packaged: Boolean(packaged),
+    },
+    // 便携目录：数据都在这一个文件夹里
+    portable: {
+      home: config.home,
+      source: ctx.homeSource || 'portable',
+      packaged: Boolean(packaged),
+      layout: layout || config.layout,
     },
     vm: await vm.status(),
+    qemu: qemu ? qemu.status() : null,
     sync: { jobs: sync.list().length, running: sync.list().filter((j) => j.running).length },
     tokens: security.listTokens().length,
   }), { description: '总览' });
@@ -208,9 +221,11 @@ export function createRouter(ctx) {
   router.get('/api/images/catalog', async ({ query }) => ({
     catalog: images.catalog(),
     local: await images.listLocal({ dir: query.get('dir') || undefined }),
+    disks: await images.listDisks(),
     downloadDir: images.downloadDir,
+    disksDir: images.disksDir,
     status: images.status(),
-  }), { description: '镜像目录与本地 ISO' });
+  }), { description: '镜像目录、本地文件与磁盘' });
 
   router.get('/api/images/status', () => images.status(), { description: '镜像任务状态' });
 
@@ -231,6 +246,62 @@ export function createRouter(ctx) {
 
   router.post('/api/images/create-disk', async ({ body }) => images.createDisk(body), { description: '创建 qcow2 虚拟磁盘' });
   router.post('/api/images/finish-install', async () => images.finishInstall(), { description: '安装完成，取消 ISO 引导' });
+
+  // 把已下载的镜像投入使用：ISO → 安装盘；qcow2/img → 建叠加层当系统盘（免安装）
+  router.post('/api/images/use-local', async ({ body }) => images.useLocal(body), { description: '把已下载的镜像设为安装盘或系统盘' });
+  router.post('/api/images/overlay', async ({ body }) => images.createOverlay(body), { description: '基于镜像创建 qcow2 叠加层' });
+  router.get('/api/images/disks', async () => images.listDisks(), { description: '虚拟机磁盘列表' });
+  router.post('/api/images/disk-info', async ({ body }) => images.diskInfo(requireString(body.path, 'path', { max: 1000 })), { description: '读取磁盘详情' });
+
+  /* ------------------------- QEMU ------------------------- */
+
+  router.get('/api/qemu', () => (qemu ? qemu.status() : { supported: false }), { description: 'QEMU 状态' });
+  router.post('/api/qemu/install', ({ body }) => qemu.startInstall({
+    keepInstaller: Boolean(body.keepInstaller),
+    force: Boolean(body.force),
+  }), { description: '下载并静默安装 QEMU 到便携目录（后台任务）' });
+  router.post('/api/qemu/cancel', () => ({ cancelled: qemu.cancel() }), { description: '取消 QEMU 安装' });
+  router.post('/api/qemu/verify', async () => {
+    const result = await qemu.verifyInstall();
+    if (result.ok) {
+      await config.patch({ vm: { qemuPath: result.qemuPath, qemuImgPath: result.qemuImgPath } });
+      await vm.detect({ refresh: true });
+    }
+    return result;
+  }, { description: '重新检测便携目录里的 QEMU' });
+
+  /* ------------------------- 网络 / 代理 ------------------------- */
+
+  router.get('/api/network', async () => {
+    const setting = config.get().network?.proxy || 'auto';
+    const resolved = await resolveProxy({ setting });
+    return {
+      setting,
+      active: downloader?.proxyUrl || null,
+      resolved: { url: resolved.url, source: resolved.source, detail: resolved.detail },
+      note: 'Node 不会自动使用系统代理。若开着加速器，把 proxy 设为 auto 或 http://127.0.0.1:端口 可显著提速。',
+    };
+  }, { description: '代理状态' });
+
+  router.post('/api/network/resolve', async ({ body }) => {
+    const setting = typeof body.proxy === 'string' ? body.proxy.trim() : 'auto';
+    const resolved = await resolveProxy({ setting, logger });
+    // 顺手测一下能不能真的连出去
+    let test = null;
+    if (resolved.url) {
+      test = await testProxy(resolved.url, body.testUrl || undefined);
+    }
+    return { setting, resolved, test };
+  }, { description: '解析并测试代理' });
+
+  router.post('/api/network/proxy', async ({ body }) => {
+    const setting = typeof body.proxy === 'string' ? body.proxy.trim() || 'auto' : 'auto';
+    await config.patch({ network: { proxy: setting } });
+    const resolved = await resolveProxy({ setting, logger });
+    downloader?.setProxy(resolved.url);
+    logger.info('proxy', `代理设置已更新：${setting} → ${resolved.url || '直连'}`);
+    return { setting, active: resolved.url, resolved };
+  }, { description: '修改代理设置（立即生效，无需重启）' });
 
   return router;
 }
