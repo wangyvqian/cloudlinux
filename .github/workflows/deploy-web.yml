@@ -39,6 +39,9 @@ jobs:
 
       - name: 配置 Pages
         uses: actions/configure-pages@v5
+        with:
+          # 首次运行自动启用 Pages（Source = GitHub Actions），省去手动去 Settings 里点
+          enablement: true
 
       - name: 上传静态站点
         uses: actions/upload-pages-artifact@v3
