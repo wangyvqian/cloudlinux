@@ -117,8 +117,8 @@ namespace CloudLinuxLauncher
             _cfg = LauncherConfig.Load(Path.Combine(_baseDir, "launcher.ini"));
 
             Text = "CloudLinux 启动器";
-            ClientSize = new Size(660, 520);
-            MinimumSize = new Size(560, 420);
+            ClientSize = new Size(820, 560);
+            MinimumSize = new Size(760, 460);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Microsoft YaHei UI", 9F);
             BackColor = Color.FromArgb(20, 26, 34);
@@ -186,12 +186,20 @@ namespace CloudLinuxLauncher
             _statusLabel.Location = new Point(38, 40);
             header.Controls.Add(_statusLabel);
 
-            // 操作按钮
-            FlowLayoutPanel actions = new FlowLayoutPanel();
+            // 操作按钮：用表格均分宽度。
+            // 用 FlowLayoutPanel 的话，开启 DPI 感知后字体变大、按钮变宽，
+            // 最后一个按钮就会被挤出窗口外（实测漏掉过「重置配对码」）。
+            TableLayoutPanel actions = new TableLayoutPanel();
             actions.Dock = DockStyle.Top;
-            actions.Height = 52;
+            actions.Height = 56;
             actions.Padding = new Padding(12, 10, 12, 6);
             actions.BackColor = Color.FromArgb(20, 26, 34);
+            actions.ColumnCount = 6;
+            actions.RowCount = 1;
+            for (int i = 0; i < 6; i++)
+            {
+                actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 6F));
+            }
             Controls.Add(actions);
             actions.BringToFront();
 
@@ -202,12 +210,12 @@ namespace CloudLinuxLauncher
             Button btnLog = MakeButton("打开日志", delegate { OpenLogFile(); });
             Button btnPin = MakeButton("重置配对码", delegate { RotatePin(); });
 
-            actions.Controls.Add(_btnStart);
-            actions.Controls.Add(_btnStop);
-            actions.Controls.Add(btnOpen);
-            actions.Controls.Add(btnFolder);
-            actions.Controls.Add(btnLog);
-            actions.Controls.Add(btnPin);
+            actions.Controls.Add(_btnStart, 0, 0);
+            actions.Controls.Add(_btnStop, 1, 0);
+            actions.Controls.Add(btnOpen, 2, 0);
+            actions.Controls.Add(btnFolder, 3, 0);
+            actions.Controls.Add(btnLog, 4, 0);
+            actions.Controls.Add(btnPin, 5, 0);
 
             // 配对码提示（这块要醒目，用户第一次最需要看它）
             Panel pinPanel = new Panel();
@@ -220,17 +228,19 @@ namespace CloudLinuxLauncher
             _pinLabel = new Label();
             _pinLabel.AutoSize = false;
             _pinLabel.Location = new Point(16, 8);
-            _pinLabel.Size = new Size(360, 42);
+            _pinLabel.Size = new Size(560, 42);
             _pinLabel.TextAlign = ContentAlignment.MiddleLeft;
             _pinLabel.Font = new Font("Consolas", 13F, FontStyle.Bold);
             _pinLabel.ForeColor = Color.FromArgb(126, 201, 248);
             _pinLabel.BackColor = Color.FromArgb(24, 38, 52);
             _pinLabel.Text = "配对码：尚未生成";
+            _pinLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             pinPanel.Controls.Add(_pinLabel);
 
             _urlLabel = new LinkLabel();
             _urlLabel.AutoSize = true;
-            _urlLabel.Location = new Point(392, 18);
+            _urlLabel.Location = new Point(592, 18);
+            _urlLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _urlLabel.LinkColor = Color.FromArgb(126, 201, 248);
             _urlLabel.Text = "http://127.0.0.1:" + _cfg.Port;
             _urlLabel.Click += delegate { OpenConsole(); };
@@ -266,16 +276,18 @@ namespace CloudLinuxLauncher
             _chkAuto.Text = "启动时自动运行助手";
             _chkAuto.Checked = _cfg.AutoStartAgent;
             _chkAuto.AutoSize = true;
+            _chkAuto.Dock = DockStyle.Left;
             _chkAuto.ForeColor = Color.FromArgb(160, 176, 192);
-            _chkAuto.Location = new Point(16, 12);
             _chkAuto.CheckedChanged += delegate { SaveAutoStart(); };
             footer.Controls.Add(_chkAuto);
 
+            // 靠右停靠，避免和左边的复选框在字体变大时叠到一起
             Label tip = new Label();
             tip.Text = "关闭窗口会收进托盘，真正退出请右键托盘图标。";
             tip.AutoSize = true;
+            tip.Dock = DockStyle.Right;
+            tip.TextAlign = ContentAlignment.MiddleRight;
             tip.ForeColor = Color.FromArgb(110, 130, 150);
-            tip.Location = new Point(230, 14);
             footer.Controls.Add(tip);
         }
 
@@ -283,13 +295,13 @@ namespace CloudLinuxLauncher
         {
             Button b = new Button();
             b.Text = text;
-            b.AutoSize = true;
-            b.Padding = new Padding(10, 4, 10, 4);
+            // 靠单元格填满，宽度由表格列动态决定（不受字号影响）
+            b.Dock = DockStyle.Fill;
             b.FlatStyle = FlatStyle.Flat;
             b.FlatAppearance.BorderColor = Color.FromArgb(38, 50, 63);
             b.BackColor = Color.FromArgb(34, 48, 64);
             b.ForeColor = Color.FromArgb(230, 237, 243);
-            b.Margin = new Padding(0, 0, 8, 0);
+            b.Margin = new Padding(0, 0, 6, 0);
             b.Click += onClick;
             return b;
         }

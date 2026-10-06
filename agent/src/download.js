@@ -11,7 +11,7 @@ import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import { openTunnel, shouldBypassProxy } from './proxy.js';
-import { humanBytes, pathExists } from './util.js';
+import { ensureDir, humanBytes, pathExists } from './util.js';
 
 const USER_AGENT = 'cloudlinux-agent/0.1 (+https://github.com/wangyvqian/cloudlinux)';
 const REDIRECT_LIMIT = 6;
@@ -248,11 +248,11 @@ export class FileDownloader {
     this._control = null;   // { cancelled, destroy }
     this._busy = false;
     this.proxyUrl = null;   // 由 setProxy() 注入；null = 直连
+    this.bypassHosts = [];  // 这些主机不走代理
+    this._resolveProxy = null;
   }
 
-  /**
-   * 设置代理。传 null 表示直连。
-   */
+  /** 设置代理。传 null 表示直连。 */
   setProxy(url) {
     const next = url || null;
     if (this.proxyUrl !== next) {
@@ -260,6 +260,25 @@ export class FileDownloader {
     }
     this.proxyUrl = next;
     return this;
+  }
+
+  /** 设置代理绕过列表（这些主机直连，不走代理）。 */
+  setBypassHosts(list) {
+    this.bypassHosts = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (this.bypassHosts.length) {
+      this.logger?.info('download', `以下主机会绕过代理：${this.bypassHosts.join('、')}`);
+    }
+    return this;
+  }
+
+  /** 针对某个具体地址，算出该用哪个代理（可能因为绕过列表而不用）。 */
+  proxyFor(url) {
+    if (!this.proxyUrl) return null;
+    try {
+      const host = new URL(url).hostname;
+      if (shouldBypassProxy(host, this.bypassHosts)) return null;
+    } catch { /* 地址解析不了就交给下层报错 */ }
+    return this.proxyUrl;
   }
 
   /**
@@ -283,6 +302,24 @@ export class FileDownloader {
       this.logger?.warn('download', `代理探测失败，沿用上次设置：${err.message}`);
     }
     return this.proxyUrl;
+  }
+
+  /**
+   * 带着代理跑一次操作；如果是代理本身连不上，就**去掉代理重试一次**。
+   *
+   * 这个回退很关键：代理半死不活时（加速器刚关、注册表还留着）
+   * 不应该让国内镜像也一起下不了。
+   */
+  async _withProxyFallback(url, run, label) {
+    const proxyUrl = this.proxyFor(url);
+    try {
+      return await run(proxyUrl);
+    } catch (err) {
+      if (!proxyUrl || err.cancelled || !err.isProxyError) throw err;
+      this.logger?.warn('download', `${label}经代理失败（${err.message}），将去掉代理直连重试`);
+      this.setProxy(null); // 本次任务后续都不再走代理
+      return await run(null);
+    }
   }
 
   get busy() {
@@ -338,6 +375,10 @@ export class FileDownloader {
     const report = (patch) => onProgress?.({ ...patch });
 
     try {
+      // 目标目录必须由这里保证存在。以前依赖调用方先建，一旦忘了就会是
+      // 一个很难理解的 ENOENT（写流打开失败，但报错发生在后面的 stat 上）。
+      await ensureDir(path.dirname(destPath));
+
       // 已经下好了？
       if (trustExisting && await pathExists(destPath)) {
         const stat = await fsp.stat(destPath);
@@ -351,7 +392,19 @@ export class FileDownloader {
       }
 
       report({ phase: 'probing', bytes: 0, total: expectedSize, percent: null });
-      const remote = await probeRemote(url, { proxyUrl: this.proxyUrl });
+      let remote = await this._withProxyFallback(url,
+        (proxyUrl) => probeRemote(url, { proxyUrl }),
+        '探测镜像源');
+
+      // probeRemote 失败时是**返回** ok:false，而不是抛异常，
+      // 所以这里要再兜一次：可能是代理半死（端口通但隧道不通）。
+      if (!remote.ok && this.proxyFor(url)) {
+        this.logger?.warn('download',
+          `经代理探测失败（${remote.error || `HTTP ${remote.status}`}），去掉代理直连重试`);
+        this.setProxy(null); // 本次任务后续都不再走代理
+        remote = await probeRemote(url, { proxyUrl: null });
+      }
+
       if (!remote.ok) {
         const err = new Error(`无法访问下载地址：${remote.error || `HTTP ${remote.status}`}`);
         err.statusCode = 502;
@@ -380,7 +433,7 @@ export class FileDownloader {
         phase: 'downloading', bytes: start, total,
         speed: 0, speedText: '', etaSec: null, resumedFrom: start || null,
         percent: total ? (start / total) * 100 : null,
-        viaProxy: Boolean(this.proxyUrl),
+        viaProxy: Boolean(this.proxyFor(url)),
       });
 
       const startedAt = Date.now();
@@ -388,7 +441,9 @@ export class FileDownloader {
       let lastTick = 0;
       const samples = [{ t: startedAt, b: start }];
 
-      const { res, url: effectiveUrl } = await openStream(url, { start, proxyUrl: this.proxyUrl });
+      const { res, url: effectiveUrl } = await this._withProxyFallback(url,
+        (proxyUrl) => openStream(url, { start, proxyUrl }),
+        '建立连接');
       const status = res.statusCode || 0;
       if (status !== 200 && status !== 206) {
         res.resume();
@@ -424,57 +479,62 @@ export class FileDownloader {
       // 一旦下载失败/被中断就会跳过去，看门狗会一直跑（泄漏定时器）。
       try {
         await new Promise((resolve, reject) => {
-        // 销毁流不一定触发 'error'，必须自己保证 Promise 一定会 settle，
-        // 否则任务会卡死、busy 锁不释放（后续请求全部 409）。
-        let settled = false;
-        const done = (fn, arg) => {
-          if (settled) return;
-          settled = true;
-          fn(arg);
-        };
-        const abort = () => done(reject, makeCancelledError());
+          // 销毁流不一定触发 'error'，必须自己保证 Promise 一定会 settle，
+          // 否则任务会卡死、busy 锁不释放（后续请求全部 409）。
+          let settled = false;
+          const done = (fn, arg) => {
+            if (settled) return;
+            settled = true;
+            fn(arg);
+          };
+          const abort = () => done(reject, makeCancelledError());
 
-        control.destroy = () => {
-          try { res.destroy(); } catch { /* ignore */ }
-          try { file.destroy(); } catch { /* ignore */ }
-          abort();
-        };
+          // 写流先失败（磁盘满 / 路径不存在）就不该再继续收数据
+          file.on('error', (err) => {
+            try { res.destroy(); } catch { /* ignore */ }
+            done(reject, new Error(`写入文件失败：${err.message}`));
+          });
 
-        res.on('data', (chunk) => {
-          lastDataAt = Date.now();
-          bytes += chunk.length;
-          if (!file.write(chunk)) {
-            res.pause();
-            file.once('drain', () => res.resume());
-          }
-          const now = Date.now();
-          if (now - lastTick >= PROGRESS_INTERVAL_MS) {
-            lastTick = now;
-            samples.push({ t: now, b: bytes });
-            while (samples.length > 2 && now - samples[0].t > SPEED_WINDOW_MS) samples.shift();
-            const oldest = samples[0];
-            const span = (now - oldest.t) / 1000;
-            const speed = span > 0.5 ? (bytes - oldest.b) / span : 0;
-            const etaSec = (total2 && speed > 0) ? Math.max(0, (total2 - bytes) / speed) : null;
-            report({
-              phase: 'downloading', bytes, total: total2,
-              bytesText: humanBytes(bytes),
-              speed: Math.round(speed),
-              speedText: speed > 0 ? `${humanBytes(speed)}/s` : '',
-              etaSec: etaSec === null ? null : Math.round(etaSec),
-              percent: total2 ? Math.min(100, (bytes / total2) * 100) : null,
-            });
-          }
-        });
+          control.destroy = () => {
+            try { res.destroy(); } catch { /* ignore */ }
+            try { file.destroy(); } catch { /* ignore */ }
+            abort();
+          };
 
-        res.on('end', () => file.end(() => done(resolve)));
-        res.on('error', (err) => done(reject, err));
-        res.on('close', () => {
-          if (control.cancelled) abort();
-          else if (!res.complete) done(reject, new Error('连接被提前关闭，下载不完整'));
-        });
-        file.on('error', (err) => done(reject, err));
-        file.on('close', () => { if (control.cancelled) abort(); });
+          res.on('data', (chunk) => {
+            lastDataAt = Date.now();
+            bytes += chunk.length;
+            if (!file.write(chunk)) {
+              res.pause();
+              file.once('drain', () => res.resume());
+            }
+            const now = Date.now();
+            if (now - lastTick >= PROGRESS_INTERVAL_MS) {
+              lastTick = now;
+              samples.push({ t: now, b: bytes });
+              while (samples.length > 2 && now - samples[0].t > SPEED_WINDOW_MS) samples.shift();
+              const oldest = samples[0];
+              const span = (now - oldest.t) / 1000;
+              const speed = span > 0.5 ? (bytes - oldest.b) / span : 0;
+              const etaSec = (total2 && speed > 0) ? Math.max(0, (total2 - bytes) / speed) : null;
+              report({
+                phase: 'downloading', bytes, total: total2,
+                bytesText: humanBytes(bytes),
+                speed: Math.round(speed),
+                speedText: speed > 0 ? `${humanBytes(speed)}/s` : '',
+                etaSec: etaSec === null ? null : Math.round(etaSec),
+                percent: total2 ? Math.min(100, (bytes / total2) * 100) : null,
+              });
+            }
+          });
+
+          res.on('end', () => file.end(() => done(resolve)));
+          res.on('error', (err) => done(reject, err));
+          res.on('close', () => {
+            if (control.cancelled) abort();
+            else if (!res.complete) done(reject, new Error('连接被提前关闭，下载不完整'));
+          });
+          file.on('close', () => { if (control.cancelled) abort(); });
         });
       } finally {
         clearInterval(watchdog);

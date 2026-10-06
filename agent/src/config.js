@@ -109,10 +109,12 @@ export const DEFAULT_CONFIG = {
 
   // 网络：Node 不会自动走系统代理，开加速器时需要在这里显式指定
   network: {
-    // auto = 自动探测（环境变量 → Windows 系统代理 → 常见端口）
+    // auto = 自动探测（环境变量 → Windows 系统代理 → 常见端口），只采用**确实能连上**的
     // off  = 强制直连
     // 也可以直接填地址，如 http://127.0.0.1:7897
     proxy: 'auto',
+    // 这些主机不走代理（内置镜像的国内镜像站会自动加入，不用手写）
+    bypass: [],
   },
 };
 
@@ -326,6 +328,12 @@ export class ConfigStore {
       const n = {};
       if (typeof input.network.proxy === 'string') {
         n.proxy = input.network.proxy.trim().slice(0, 200) || 'auto';
+      }
+      if (Array.isArray(input.network.bypass)) {
+        n.bypass = input.network.bypass
+          .filter((x) => typeof x === 'string' && x.trim())
+          .map((x) => x.trim().slice(0, 200))
+          .slice(0, 50);
       }
       if (Object.keys(n).length) out.network = n;
     }

@@ -18,6 +18,17 @@ import { execFile } from 'node:child_process';
 
 const TUNNEL_TIMEOUT_MS = 15000;
 
+/** 常见的本地代理端口（Clash / v2ray / SS 等）。 */
+const COMMON_PROXY_PORTS = [7897, 7890, 10809, 1080, 7891, 8889, 2080];
+
+/** 把错误标记成「代理问题」，上层可以据此回退直连重试。 */
+function markProxyError(err, message) {
+  const wrapped = new Error(message);
+  wrapped.isProxyError = true;
+  wrapped.cause = err;
+  return wrapped;
+}
+
 /* ------------------------------------------------------------------ */
 /* 解析代理地址                                                        */
 /* ------------------------------------------------------------------ */
@@ -83,48 +94,61 @@ function isWindowsProxyEnabled() {
  * @param {object} [options.logger]
  * @returns {Promise<{url:string|null, source:string, detail:string}>}
  */
-export async function resolveProxy({ setting = 'auto', logger } = {}) {
+export async function resolveProxy({ setting = 'auto', logger, verify = true } = {}) {
   const clean = String(setting ?? 'auto').trim();
 
   if (clean === 'off' || clean === 'none' || clean === 'false') {
     return { url: null, source: 'disabled', detail: '已手动关闭代理' };
   }
+
+  // 按优先级收集候选，再逐个验证可达性
+  const candidates = [];
+
   if (clean && clean !== 'auto' && clean !== 'true') {
     const url = normalizeProxyUrl(clean);
-    if (url) return { url, source: 'config', detail: '来自配置 network.proxy' };
-    logger?.warn('proxy', `配置里的代理地址无法解析：${clean}，将改为自动探测`);
+    if (url) candidates.push({ url, source: 'config', detail: '来自配置 network.proxy' });
+    else logger?.warn('proxy', `配置里的代理地址无法解析：${clean}，将改为自动探测`);
   }
 
-  // 环境变量优先于系统注册表（用户显式设的更可信）
   const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy
     || process.env.HTTP_PROXY || process.env.http_proxy;
-  if (envProxy && !/^https?:\/\/(127\.0\.0\.1|localhost)$/i.test(envProxy)) {
+  if (envProxy) {
     const url = normalizeProxyUrl(envProxy);
-    if (url) return { url, source: 'env', detail: '来自环境变量 HTTPS_PROXY/HTTP_PROXY' };
+    if (url) candidates.push({ url, source: 'env', detail: '来自环境变量 HTTPS_PROXY/HTTP_PROXY' });
   }
 
-  // Windows 系统代理
   if (await isWindowsProxyEnabled()) {
     const raw = await readWindowsSystemProxy();
     const url = normalizeProxyUrl(raw);
-    if (url) return { url, source: 'system', detail: '来自 Windows 系统代理设置' };
+    if (url) candidates.push({ url, source: 'system', detail: '来自 Windows 系统代理设置' });
   }
 
-  // 最后兜底：探测常见端口（Clash / v2ray 的默认端口）
-  const common = [7897, 7890, 10809, 1080, 7891];
-  for (const port of common) {
+  for (const port of COMMON_PROXY_PORTS) {
     if (await isPortListening(port)) {
-      const url = `http://127.0.0.1:${port}`;
-      return { url, source: 'probe', detail: `自动发现本地代理端口 ${port}` };
+      candidates.push({ url: `http://127.0.0.1:${port}`, source: 'probe', detail: `自动发现本地代理端口 ${port}` });
     }
   }
 
-  return { url: null, source: 'none', detail: '未发现可用的代理' };
+  if (!candidates.length) return { url: null, source: 'none', detail: '未发现可用的代理' };
+  if (!verify) return candidates[0];
+
+  // 关键：逐个验证端口真的能连上。
+  // 加速器退出时经常只关进程、把注册表留在那里，盲目使用会连累所有下载。
+  const unreachable = [];
+  for (const candidate of candidates) {
+    if (await isProxyReachable(candidate.url)) return candidate;
+    unreachable.push(candidate);
+  }
+
+  const detail = `发现 ${unreachable.length} 个代理配置但都连不上`
+    + `（${unreachable.map((c) => c.url).join('、')}）`;
+  logger?.warn('proxy', `${detail}，将直连。若想强制使用或关闭代理，请在设置里改「代理」选项`);
+  return { url: null, source: 'unreachable', detail };
 }
 
-function isPortListening(port) {
+function isPortListening(port, host = '127.0.0.1', timeoutMs = 700) {
   return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port });
+    const socket = net.connect({ host, port });
     let done = false;
     const finish = (ok) => {
       if (done) return;
@@ -132,7 +156,7 @@ function isPortListening(port) {
       socket.destroy();
       resolve(ok);
     };
-    socket.setTimeout(700);
+    socket.setTimeout(timeoutMs);
     socket.once('connect', () => finish(true));
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
@@ -143,11 +167,36 @@ function isPortListening(port) {
 /* 请求辅助                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 目标地址是否应绕过代理（本机地址不该走代理）。 */
-export function shouldBypassProxy(hostname) {
+/** 目标地址是否应绕过代理（本机地址与已知国内镜像不该走代理）。 */
+export function shouldBypassProxy(hostname, extra = []) {
   const h = String(hostname || '').toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1'
-    || h.endsWith('.localhost') || h.startsWith('127.');
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.localhost') || h.startsWith('127.')) {
+    return true;
+  }
+  for (const raw of extra) {
+    let p = String(raw || '').toLowerCase().trim();
+    if (!p) continue;
+    if (p.startsWith('*.')) p = p.slice(2);
+    else if (p.startsWith('.')) p = p.slice(1);
+    if (!p) continue;
+    if (h === p || h.endsWith('.' + p)) return true;
+  }
+  return false;
+}
+
+/**
+ * 代理端口是否真的能连上。
+ *
+ * 这一步很关键：加速器退出时常常只把进程关掉，**把注册表里的 ProxyServer 留着**。
+ * 盲目相信注册表就会拿一个已经死掉的代理去下载，结果是全线 ECONNREFUSED。
+ */
+export async function isProxyReachable(proxyUrl, { timeoutMs = 1500 } = {}) {
+  try {
+    const url = new URL(proxyUrl);
+    return await isPortListening(Number(url.port) || 8080, url.hostname, timeoutMs);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -173,8 +222,10 @@ export function openTunnel(proxyUrl, targetHost, targetPort, {
     };
 
     socket.setTimeout(timeoutMs);
-    socket.once('timeout', () => fail(new Error(`连接代理超时（${proxy.hostname}:${proxy.port}）`)));
-    socket.once('error', (err) => fail(new Error(`无法连接代理 ${proxy.hostname}:${proxy.port}：${err.message}`)));
+    socket.once('timeout', () => fail(markProxyError(null,
+      `连接代理超时（${proxy.hostname}:${proxy.port}）`)));
+    socket.once('error', (err) => fail(markProxyError(err,
+      `无法连接代理 ${proxy.hostname}:${proxy.port}：${err.message}`)));
 
     socket.once('connect', () => {
       let auth = '';
@@ -203,7 +254,7 @@ export function openTunnel(proxyUrl, targetHost, targetPort, {
       const statusLine = head.split('\r\n')[0] || '';
       const code = Number((statusLine.match(/\s(\d{3})\s?/) || [])[1]);
       if (code !== 200) {
-        fail(new Error(`代理拒绝建立隧道：${statusLine.trim() || '无响应'}`));
+        fail(markProxyError(null, `代理拒绝建立隧道：${statusLine.trim() || '无响应'}`));
         return;
       }
       // 隧道通了，在其上做 TLS
@@ -218,7 +269,7 @@ export function openTunnel(proxyUrl, targetHost, targetPort, {
         settled = true;
         resolve(tlsSocket);
       });
-      tlsSocket.once('error', (err) => fail(new Error(`TLS 握手失败：${err.message}`)));
+      tlsSocket.once('error', (err) => fail(markProxyError(err, `TLS 握手失败：${err.message}`)));
     };
     socket.on('data', onData);
   });

@@ -6,6 +6,9 @@
 (function main() {
   'use strict';
 
+  // 版本号必须和 index.html 的 data-app-version / 资源查询串保持一致。
+  // index.html 与 app.js 是分开缓存的，一旦错配就会出现「按钮在、但点了没反应」。
+  const APP_VERSION = '0.2.1';
   const BASE_KEY = 'cloudlinux.base';
   const DEFAULT_BASE = 'http://127.0.0.1:8765';
   const POLL_INTERVAL = 6000;
@@ -1564,8 +1567,16 @@
   document.addEventListener('click', (event) => {
     const trigger = event.target.closest('[data-action]');
     if (!trigger) return;
-    const handler = actions[trigger.dataset.action];
-    if (!handler) return;
+    const action = trigger.dataset.action;
+    const handler = actions[action];
+    if (!handler) {
+      // 以前这里是静默 return，结果页面版本不一致（index.html 是新的、app.js 是缓存里的旧版）
+      // 时，按钮看上去就是“点不动”且没有任何提示。现在让它说清楚。
+      toast(`这个按钮（${action}）没有对应处理逻辑，页面可能不是最新版。`
+        + '请按 Ctrl+F5 强制刷新后再试。', 'error', 10000);
+      console.warn('[cloudlinux] 未知动作：', action, '已知动作：', Object.keys(actions));
+      return;
+    }
     event.preventDefault();
     try {
       const result = handler(trigger);
@@ -1648,6 +1659,13 @@
   (async function boot() {
     renderLogs();
     setConnection('offline');
+
+    // 版本自检：页面与脚本对不上先提醒，免得后缁疑难问题
+    const pageVersion = document.body?.dataset?.appVersion;
+    if (pageVersion && pageVersion !== APP_VERSION) {
+      toast(`页面版本 ${pageVersion} 与脚本版本 ${APP_VERSION} 不一致，`
+        + '部分按钮可能不工作。请按 Ctrl+F5 强制刷新。', 'error', 15000);
+    }
 
     const info = await checkConnection({ silent: true });
     if (!info) {

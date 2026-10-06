@@ -18,7 +18,7 @@ import { AGENT_ROOT, AGENT_VERSION, ConfigStore } from './config.js';
 import { DeviceManager } from './devices.js';
 import { FileDownloader } from './download.js';
 import { EventHub } from './events.js';
-import { ImageManager } from './images.js';
+import { ImageManager, CATALOG } from './images.js';
 import { Logger } from './logger.js';
 import { resolveLayout } from './paths.js';
 import { resolveProxy } from './proxy.js';
@@ -164,11 +164,21 @@ async function main() {
   // Node 不会自动使用系统代理。开加速器时如果不显式探测，下载会走直连而慢到不可用。
   const proxyInfo = await resolveProxy({ setting: config.get().network?.proxy, logger });
   downloader.setProxy(proxyInfo.url);
-  // 每次下载前重新解析：用户可能在助手运行期间才打开加速器
+  // 每次下载前重新解析：用户可能在助手运行期间才打开/关闭加速器
   downloader.setProxyResolver(async () => {
-    const r = await resolveProxy({ setting: config.get().network?.proxy });
+    const r = await resolveProxy({ setting: config.get().network?.proxy, logger });
     return r.url;
   });
+
+  // 国内镜像站直连就很快，走代理反而变慢/变不稳，所以自动加入绕过列表
+  const catalogHosts = CATALOG.flatMap((entry) => entry.mirrors.map((mirror) => {
+    try { return new URL(mirror).hostname; } catch { return null; }
+  })).filter(Boolean);
+  downloader.setBypassHosts([
+    ...(config.get().network?.bypass || []),
+    ...catalogHosts,
+  ]);
+
   if (proxyInfo.url) {
     logger.info('proxy', `已启用代理 ${proxyInfo.url}（${proxyInfo.detail}）`);
   } else {
