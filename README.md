@@ -230,15 +230,35 @@ qemu-img create -f qcow2 zorin.qcow2 32G
 
 ## 部署前端到 GitHub Pages
 
+仓库已配好工作流并实测部署成功：
+
+> **控制台在线地址：<https://wangyvqian.github.io/cloudlinux/>**
+
 方式一（最简单）：把 `cloudlinux/web/` 里的文件复制到仓库根目录或 `docs/`，
 然后 Settings → Pages → Source 选对应目录。
 
-方式二（GitHub Actions）：仓库里已附带
-`.github/workflows/deploy-web.yml`，它会把 `cloudlinux/web` 发布到 Pages。
-把它放到**仓库根目录的** `.github/workflows/` 下即可（见文件内注释）。
+方式二：`.github/workflows/deploy-web.yml` 会把 `cloudlinux/web` 发布到 Pages。
+如果它是仓库根目录的 `.github/workflows/` 下，直接就能用；
+若在子目录里，需要把它移到根目录并相应调整 `WEB_DIR`。
 
-Pages 地址形如 `https://<用户名>.github.io/<仓库名>/`，
-助手默认已把 `https://*.github.io` 加入 Origin 白名单。
+首次部署时 Pages 的“站点”需要先创建一次。`actions/configure-pages` 的 `enablement: true`
+在部分仓库会报 `Resource not accessible by integration`，改用个人令牌建一次即可：
+
+```bash
+gh api -X POST repos/<用户名>/<仓库名>/pages -f build_type=workflow
+```
+
+### 混合内容：HTTPS 页面连本机 HTTP 助手
+
+这是本方案能成立的关键，已经实测验证：
+
+- GitHub Pages 是 **HTTPS**，而助手是 **`http://127.0.0.1:8765`**（**HTTP**）。
+  按浏览器的混合内容策略，`http://127.0.0.1` 被当作 **potentially trustworthy origin**，
+  因此 `fetch` 与 **`EventSource`（SSE）都能正常工作**——实测从 Pages 站点
+  配对、加载数据、接收实时日志全部正常。
+- 默认白名单里的 `https://*.github.io` 就是为这种情况准备的。
+- **例外**：`ws://`（VNC 画面用）在 HTTPS 页面下仍可能被拦。想用画面，
+  要么用 http 打开控制台，要么给助手配一个带 TLS 的隧道。
 
 ---
 
