@@ -1,0 +1,50 @@
+# 把 web/ 目录发布到 GitHub Pages
+#
+# ⚠️ 放置位置很重要：这个文件必须位于**仓库根目录**的 .github/workflows/ 下。
+#
+#   · 如果你把 cloudlinux/ 单独建一个仓库 → 把本文件移到该仓库的 .github/workflows/ 下
+#   · 如果你想在现有仓库里发布 → 移动本文件，并把下面的 WEB_DIR 改成 cloudlinux/web
+#
+# 发布后地址形如 https://<用户名>.github.io/<仓库名>/
+# 助手默认已把 https://*.github.io 加入 Origin 白名单，无需额外配置。
+
+name: Deploy web console to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # 前端静态文件所在目录（相对仓库根目录）
+  WEB_DIR: web
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传静态站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.WEB_DIR }}
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4

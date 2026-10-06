@@ -1,0 +1,23 @@
+{
+  "name": "cloudlinux-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CloudLinux 桌面助手：在本机管理虚拟机、文件同步与外设，并向浏览器控制台暴露受保护的本地 API。",
+  "bin": {
+    "cloudlinux-agent": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "new-pin": "node src/index.js --new-pin",
+    "routes": "node src/index.js --print-routes",
+    "test": "echo \"先启动助手，再运行： npm run test:smoke -- <配对码>\" && exit 0",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:images": "node scripts/test-images.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CloudLinux · 云端桌面控制台</title>
+<meta name="description" content="浏览器里管理本机 Zorin OS 虚拟机、文件同步与外设的静态控制台。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐧</text></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===================== 侧边栏 ===================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🐧</div>
+      <div class="brand-text">
+        <strong>CloudLinux</strong>
+        <span>浏览器里的桌面</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="overview"><span class="nav-ico">◈</span>概览</button>
+      <button class="nav-item" data-view="vm"><span class="nav-ico">▣</span>虚拟机</button>
+      <button class="nav-item" data-view="sync"><span class="nav-ico">⇄</span>文件同步</button>
+      <button class="nav-item" data-view="devices"><span class="nav-ico">⌘</span>外设</button>
+      <button class="nav-item" data-view="logs"><span class="nav-ico">≣</span>日志</button>
+      <button class="nav-item" data-view="settings"><span class="nav-ico">⚙</span>设置</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="conn" id="conn">
+        <span class="conn-dot" id="conn-dot"></span>
+        <div class="conn-text">
+          <strong id="conn-label">未连接</strong>
+          <span id="conn-url">—</span>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm btn-block" id="btn-change-url">更换助手地址</button>
+    </div>
+  </aside>
+
+  <!-- ===================== 主区域 ===================== -->
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1 id="view-title">概览</h1>
+        <p id="view-subtitle">桌面助手的运行状态一览</p>
+      </div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+
+    <div class="content">
+
+      <!-- ---------- 概览 ---------- -->
+      <section class="view active" id="view-overview">
+        <div class="grid grid-4" id="stat-cards"></div>
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>虚拟机</h2><span class="badge" id="ov-vm-badge">—</span></div>
+            <div class="card-body" id="ov-vm-body"><div class="empty">加载中…</div></div>
+            <div class="card-foot">
+              <button class="btn btn-primary" data-action="vm-start">启动</button>
+              <button class="btn" data-action="vm-stop">停止</button>
+              <button class="btn" data-action="go-view" data-target="vm">查看详情 →</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>文件同步</h2><span class="badge" id="ov-sync-badge">—</span></div>
+            <div class="card-body" id="ov-sync-body"><div class="empty">加载中…</div></div>
+            <div class="card-foot">
+              <button class="btn btn-primary" data-action="go-view" data-target="sync">管理同步任务 →</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>助手信息</h2></div>
+          <div class="card-body" id="ov-agent-body"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------- 虚拟机 ---------- -->
+      <section class="view" id="view-vm">
+        <div class="card">
+          <div class="card-head">
+            <h2>系统镜像</h2>
+            <span class="badge" id="image-badge">—</span>
+          </div>
+          <div class="card-body">
+            <div id="image-progress"></div>
+            <div class="form-grid">
+              <label class="span-2">选择镜像
+                <select class="input" id="img-catalog"></select>
+              </label>
+              <label>ISO 存放目录（留空用默认）
+                <input class="input" id="img-dir" placeholder="留空 = 助手数据目录/images">
+              </label>
+              <label>虚拟磁盘路径（留空自动生成）
+                <input class="input" id="img-disk" placeholder="留空 = ISO 目录/&lt;版本&gt;.qcow2">
+              </label>
+              <label>磁盘大小 (GB)
+                <input class="input" id="img-disksize" type="number" min="8" max="512" value="32">
+              </label>
+              <label>镜像源
+                <select class="input" id="img-mirror"></select>
+              </label>
+              <label class="check"><input type="checkbox" id="img-verify" checked> 校验 SHA256（推荐）</label>
+              <label class="check"><input type="checkbox" id="img-start"> 准备完成后立即启动</label>
+            </div>
+            <div class="card-foot no-pad">
+              <button class="btn btn-primary" data-action="image-prepare">一键准备</button>
+              <button class="btn" data-action="image-download">只下载 ISO</button>
+              <button class="btn btn-danger" data-action="image-cancel">取消任务</button>
+              <button class="btn btn-ghost" data-action="image-finish">安装已完成</button>
+            </div>
+            <p class="hint">
+              「一键准备」会把 ISO 下载到本地（支持<span class="em">断点续传</span>与 SHA256 校验）、
+              创建 qcow2 虚拟磁盘，并把安装盘写进配置。之后点「启动」即可进入 Zorin OS 安装程序。
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>镜像目录</h2>
+            <button class="btn btn-sm" data-action="images-refresh">刷新</button>
+          </div>
+          <div class="card-body" id="img-catalog-body"><div class="empty">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>本地 ISO 与未完成下载</h2>
+            <span class="badge" id="img-local-dir">—</span>
+          </div>
+          <div class="card-body" id="img-local-body"><div class="empty">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>自定义镜像链接</h2></div>
+          <div class="card-body">
+            <div class="row-gap">
+              <input class="input" id="img-custom-url" placeholder="https://example.com/xxx.iso" style="flex:1;min-width:240px" spellcheck="false">
+              <button class="btn" data-action="image-custom-probe">探测</button>
+              <button class="btn btn-primary" data-action="image-custom-download">下载</button>
+            </div>
+            <div id="img-custom-result"></div>
+            <p class="hint">自定义链接默认不校验（无法预知正确校验和）。若你有官方 SHA256，可填在下方再下载。</p>
+            <input class="input" id="img-custom-sha" placeholder="可选：期望的 SHA256（64 位十六进制）" style="margin-top:8px" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>运行状态</h2><span class="badge" id="vm-badge">—</span></div>
+            <div class="card-body" id="vm-status-body"><div class="empty">加载中…</div></div>
+            <div class="card-foot">
+              <button class="btn btn-primary" data-action="vm-start">启动</button>
+              <button class="btn" data-action="vm-stop">优雅关机</button>
+              <button class="btn btn-danger" data-action="vm-stop-force">强制关闭</button>
+              <button class="btn" data-action="vm-restart">重启</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>桌面画面</h2><span class="badge" id="vnc-badge">—</span></div>
+            <div class="card-body">
+              <div class="vnc-wrap">
+                <div id="vnc-screen" class="vnc-screen"><div class="empty">虚拟机启动后可在此查看桌面</div></div>
+              </div>
+              <p class="hint" id="vnc-hint"></p>
+            </div>
+            <div class="card-foot">
+              <button class="btn btn-primary" data-action="vnc-connect">连接画面</button>
+              <button class="btn" data-action="vnc-disconnect">断开</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>快照</h2>
+            <div class="row-gap">
+              <input class="input input-sm" id="snapshot-name" placeholder="快照名，如 clean-install">
+              <button class="btn btn-primary btn-sm" data-action="snapshot-create">创建快照</button>
+            </div>
+          </div>
+          <div class="card-body" id="snapshot-body"><div class="empty">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>QEMU 环境</h2>
+            <button class="btn btn-sm" data-action="vm-detect">重新探测</button>
+          </div>
+          <div class="card-body" id="qemu-body"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------- 文件同步 ---------- -->
+      <section class="view" id="view-sync">
+        <div class="card">
+          <div class="card-head"><h2>新建同步任务</h2></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <label>任务名<input class="input" id="job-name" placeholder="我的文档"></label>
+              <label>方向
+                <select class="input" id="job-direction">
+                  <option value="push">推送（源 → 目标）</option>
+                  <option value="pull">拉取（目标 → 源）</option>
+                  <option value="bidirectional">双向同步</option>
+                </select>
+              </label>
+              <label class="span-2">源目录<input class="input" id="job-source" placeholder="C:\Users\me\Documents"></label>
+              <label class="span-2">目标目录<input class="input" id="job-target" placeholder="D:\vms\zorin\share\docs"></label>
+              <label class="span-2">排除规则（逗号分隔，支持 * 通配）<input class="input" id="job-excludes" placeholder="**/cache/**, *.iso"></label>
+              <label class="check"><input type="checkbox" id="job-mirror"> 镜像模式（删除目标端多余文件）</label>
+              <label class="check"><input type="checkbox" id="job-autobackup" checked> 同步后自动备份</label>
+            </div>
+            <div class="card-foot no-pad">
+              <button class="btn btn-primary" data-action="job-add">添加任务</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>同步任务</h2></div>
+          <div class="card-body" id="jobs-body"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------- 外设 ---------- -->
+      <section class="view" id="view-devices">
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>串口</h2><button class="btn btn-sm" data-action="devices-refresh">刷新</button></div>
+            <div class="card-body" id="serial-body"><div class="empty">加载中…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>USB 设备</h2><button class="btn btn-sm" data-action="devices-refresh">刷新</button></div>
+            <div class="card-body" id="usb-body"><div class="empty">加载中…</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>使用提示</h2></div>
+          <div class="card-body" id="devices-hints"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------- 日志 ---------- -->
+      <section class="view view-fill" id="view-logs">
+        <div class="card card-fill">
+          <div class="card-head">
+            <h2>实时日志</h2>
+            <div class="row-gap">
+              <select class="input input-sm" id="log-level">
+                <option value="debug">debug</option>
+                <option value="info" selected>info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+              <label class="check"><input type="checkbox" id="log-autoscroll" checked> 自动滚动</label>
+              <button class="btn btn-sm" data-action="logs-clear">清空</button>
+            </div>
+          </div>
+          <div class="card-body log-body" id="log-body"></div>
+        </div>
+      </section>
+
+      <!-- ---------- 设置 ---------- -->
+      <section class="view" id="view-settings">
+        <div class="card">
+          <div class="card-head"><h2>虚拟机配置</h2></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <label class="check span-2"><input type="checkbox" id="cfg-vm-enabled"> 启用虚拟机管理</label>
+              <label class="span-2">QEMU 可执行文件路径（留空自动探测）<input class="input" id="cfg-qemu-path" placeholder="C:\Program Files\qemu\qemu-system-x86_64.exe"></label>
+              <label class="span-2">磁盘镜像路径（qcow2）<input class="input" id="cfg-image-path" placeholder="D:\vms\zorin\zorin.qcow2"></label>
+              <label class="span-2">安装 ISO（首次装系统时填写，装完清空）<input class="input" id="cfg-installer-iso" placeholder="D:\iso\Zorin-OS-17-Core-64-bit.iso"></label>
+              <label>内存 (MB)<input class="input" id="cfg-memory" type="number" min="512" step="256"></label>
+              <label>CPU 核心<input class="input" id="cfg-cpus" type="number" min="1" max="64"></label>
+              <label>加速器
+                <select class="input" id="cfg-accel">
+                  <option value="auto">自动</option>
+                  <option value="whpx">whpx（Windows Hyper-V）</option>
+                  <option value="kvm">kvm（Linux）</option>
+                  <option value="hvf">hvf（macOS）</option>
+                  <option value="tcg">tcg（纯软件，最慢）</option>
+                </select>
+              </label>
+              <label>SSH 转发端口<input class="input" id="cfg-ssh-port" type="number" min="1" max="65535"></label>
+              <label>VNC websocket 端口<input class="input" id="cfg-vnc-ws" type="number" min="0" max="65535"></label>
+              <label>VNC 密码（最多 8 位）<input class="input" id="cfg-vnc-password" placeholder="留空则不设密码"></label>
+              <label class="span-2">额外 QEMU 参数（每行一个）<textarea class="input" id="cfg-extra-args" rows="3" placeholder="-device usb-host,vendorid=0x1234,productid=0x5678"></textarea></label>
+            </div>
+            <div class="card-foot no-pad">
+              <button class="btn btn-primary" data-action="config-save">保存配置</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>已配对设备</h2>
+            <div class="row-gap">
+              <button class="btn btn-sm" data-action="tokens-refresh">刷新</button>
+              <button class="btn btn-sm btn-danger" data-action="unpair-all">全部解绑</button>
+              <button class="btn btn-sm" data-action="rotate-pin">重置配对码</button>
+            </div>
+          </div>
+          <div class="card-body" id="tokens-body"><div class="empty">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>安全策略</h2></div>
+          <div class="card-body" id="security-body"><div class="empty">加载中…</div></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ===================== 配对对话框 ===================== -->
+<dialog class="dialog" id="pair-dialog">
+  <form method="dialog" class="dialog-form" id="pair-form">
+    <h2>与桌面助手配对</h2>
+    <p class="hint">在运行助手的终端窗口里可以看到 6 位配对码。</p>
+    <label>配对码
+      <input class="input input-lg pin-input" id="pair-pin" maxlength="8" autocomplete="off" spellcheck="false" placeholder="K7M2QX">
+    </label>
+    <label>设备名称（可选）
+      <input class="input" id="pair-label" placeholder="我的浏览器">
+    </label>
+    <div class="dialog-error" id="pair-error"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-action="pair-cancel">取消</button>
+      <button type="submit" class="btn btn-primary">配对</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===================== 助手地址对话框 ===================== -->
+<dialog class="dialog" id="url-dialog">
+  <form method="dialog" class="dialog-form" id="url-form">
+    <h2>桌面助手地址</h2>
+    <p class="hint">助手默认监听 <code>http://127.0.0.1:8765</code>。远程使用时填隧道域名。</p>
+    <label>地址
+      <input class="input input-lg" id="url-input" placeholder="http://127.0.0.1:8765" spellcheck="false">
+    </label>
+    <div class="dialog-error" id="url-error"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-action="url-cancel">取消</button>
+      <button type="submit" class="btn btn-primary">保存并重连</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="agent-client.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
